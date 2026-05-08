@@ -1,0 +1,45 @@
+# slop-hack agent container.
+#
+# Assumes vLLM is running on the HOST at VLLM_PORT (default 8000). Modern
+# vLLM exposes the Anthropic Messages API natively at /v1/messages, so
+# Claude Code talks to it directly — no translator in between.
+#
+# Usage:
+#   ENGAGEMENT_ID=ENG-2026-001 VLLM_PORT=8000 ANTHROPIC_MODEL=<served-model> \
+#     docker compose run --rm slop-hack
+
+services:
+  slop-hack:
+    build: .
+    image: slop-hack:latest
+    container_name: slop-hack
+    cap_add:
+      - NET_RAW       # naabu SYN scan, nmap -sS
+      - NET_ADMIN
+    environment:
+      ANTHROPIC_BASE_URL: "http://${VLLM_HOST:-spark}:${VLLM_PORT:-8000}"
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-local-dummy}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-local-model}"
+      ANTHROPIC_SMALL_FAST_MODEL: "${ANTHROPIC_SMALL_FAST_MODEL:-${ANTHROPIC_MODEL:-local-model}}"
+      ENGAGEMENT_DIR: "/work/${ENGAGEMENT_ID:-default}"
+      SHODAN_API_KEY: "${SHODAN_API_KEY:-}"
+      CHAOS_KEY: "${CHAOS_KEY:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    volumes:
+      - ./scope:/scope:ro
+      - ./work:/work
+      # PD config (provider keys for subfinder etc.)
+      - ./pd-config:/root/.config:rw
+      # Persist Claude Code conversation history + todos across runs.
+      # Skills/settings/CLAUDE.md stay in the image (read-only), only
+      # ephemeral state is mounted.
+      - ./claude-state/projects:/root/.claude/projects
+      - ./claude-state/todos:/root/.claude/todos
+      - ./claude-state/statsig:/root/.claude/statsig
+    extra_hosts:
+      # Lets the container reach services on the host (where vLLM runs).
+      # Native on Mac/Windows; the gateway alias is the Linux fix.
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash"]

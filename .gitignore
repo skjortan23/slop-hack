@@ -1,0 +1,26 @@
+# Engagement data — never commit real scopes or findings
+/scope/scope.yaml
+/scope/*.yaml
+!/scope/.gitkeep
+/work/
+/claude-state/
+/pd-config/
+
+# Build / log artifacts
+*.log
+/tmp/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Node (in case anyone runs anything in here)
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

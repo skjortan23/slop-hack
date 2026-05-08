@@ -1,0 +1,25 @@
+# Engagement scope. Mount as /scope/scope.yaml in the container.
+# scope-check refuses any target not matched by an in_scope rule, or matched
+# by an out_of_scope rule (which always wins).
+
+engagement_id: ENG-2026-001
+authorized_until: 2026-06-01   # ISO date; engagement refuses after this
+
+# Per-engagement objectives. The agent reads these on session start and
+# prioritizes work accordingly. Free-form strings — keep them concrete.
+objectives:
+  - Map external attack surface (subdomains, IPs, services, technologies)
+  - Identify exposed admin panels and management interfaces
+  - Look for source code or secret disclosure (.git, .env, swagger, S3)
+  - Match identified service versions against known CVEs
+  - Check for subdomain takeover candidates
+
+in_scope:
+  - "*.acme.com"
+  - "acme.com"
+  - "203.0.113.0/24"
+
+out_of_scope:
+  - "vpn.acme.com"          # explicit host exclusion
+  - "*.dev.acme.com"        # exclude entire dev subdomain tree
+  - "203.0.113.5"           # specific IP excluded
