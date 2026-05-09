@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       exploitdb \
       massdns \
       theharvester \
+      seclists \
     && rm -rf /var/lib/apt/lists/* \
     && pipx ensurepath
 
