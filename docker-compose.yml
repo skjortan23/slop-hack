@@ -16,6 +16,10 @@ services:
     cap_add:
       - NET_RAW       # naabu SYN scan, nmap -sS
       - NET_ADMIN
+    ports:
+      # mitmproxy capture port — point host browser at localhost:8080,
+      # visit http://mitm.it through it once to install the CA cert.
+      - "8080:8080"
     environment:
       ANTHROPIC_BASE_URL: "http://${VLLM_HOST:-spark}:${VLLM_PORT:-8000}"
       ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-local-dummy}"

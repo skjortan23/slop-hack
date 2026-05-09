@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # --- system tools (apt) --------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget git jq \
-      python3 python3-pip python3-yaml pipx \
+      python3 python3-pip python3-yaml python3-requests pipx \
       golang \
       nodejs npm \
       libpcap-dev \
@@ -27,7 +27,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       exploitdb \
       massdns \
       theharvester \
+      mitmproxy \
       seclists \
+      smbclient enum4linux-ng \
+      redis-tools \
+      ldap-utils \
+      openssl ncat \
     && rm -rf /var/lib/apt/lists/* \
     && pipx ensurepath
 
@@ -51,11 +56,14 @@ RUN set -eux; \
       github.com/lc/gau/v2/cmd/gau@latest \
       github.com/tomnomnom/waybackurls@latest \
       github.com/projectdiscovery/cvemap/cmd/vulnx@latest \
+      github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest \
     ; do go install -v "$t"; done
 
 # --- Python tools (pipx) -------------------------------------------------
 # theHarvester comes from apt (entrypoint registration broken on PyPI).
-RUN pipx install shodan
+RUN pipx install shodan \
+    && pipx install arjun \
+    && pipx install ssh-audit
 
 # --- supporting data -----------------------------------------------------
 RUN mkdir -p /opt/wordlists /opt/resolvers \
@@ -79,7 +87,10 @@ COPY .claude/CLAUDE.md /root/.claude/CLAUDE.md
 RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$@"\n' \
         > /usr/local/bin/findings && chmod +x /usr/local/bin/findings \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/scope-check/check.py "$@"\n' \
-        > /usr/local/bin/scope-check && chmod +x /usr/local/bin/scope-check
+        > /usr/local/bin/scope-check && chmod +x /usr/local/bin/scope-check \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/service-enum/service-enum.py "$@"\n' \
+        > /usr/local/bin/service-enum && chmod +x /usr/local/bin/service-enum \
+ && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- engagement layout ---------------------------------------------------
 # /scope    — read-only mount: scope.yaml + API key configs

@@ -41,8 +41,13 @@ Conduct authorized penetration tests against targets defined in
 
 All on PATH. Versions vary; query `<tool> -version` if needed.
 
-**Scope/findings (slop-hack wrappers)**
-- `scope-check`, `findings`
+**Scope/findings/dispatch (slop-hack wrappers)**
+- `scope-check`, `findings`, `service-enum`
+
+`service-enum <host> <port> [service]` runs the right per-service playbook
+(ssh-audit on SSH, smbclient/enum4linux on SMB, openssl/tlsx for HTTPS cert
+checks, redis-cli on Redis, etc.) and logs structured findings. Auto-detects
+service from findings YAML / banner / default ports.
 
 **Passive recon (no packets to target)**
 - `subfinder`, `amass`, `chaos`, `asnmap`, `mapcidr`, `whois`
@@ -57,9 +62,17 @@ All on PATH. Versions vary; query `<tool> -version` if needed.
 - CDN/WAF: `cdncheck`
 - Ports: `naabu`, `nmap`, `masscan`
 
+**Webapp funnel (proxy + fuzzer)**
+- `mitmdump` / `mitmproxy` — intercepting proxy on :8080 (host port published by compose)
+- `katana -headless -proxy http://127.0.0.1:8080` — auto-crawl through proxy
+- `arjun` — hidden parameter discovery
+- `interactsh-client` — out-of-band callbacks for blind SSRF/RCE
+- skills: `webapp-capture` → `webapp-extract` → `webapp-fuzz`
+
 **Vuln/exploit**
 - `nuclei` (templates pre-fetched), `searchsploit` (exploitdb)
 - `sqlmap`, `hydra`
+- `vulnx` (PD CVE search; needs API key)
 
 **Helpers**
 - `jq`, `yq`, `python3`, standard unix toolkit
