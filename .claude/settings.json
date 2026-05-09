@@ -1,7 +1,7 @@
 {
   "_comment": "Pentest agent permissions. Real safety boundary is scope-check + container sandbox, not per-command prompts. Granular Bash patterns don't match pipe/semicolon chains, so we allow all Bash and rely on the deny list for destructive ops.",
   "permissions": {
-    "defaultMode": "bypassPermissions",
+    "defaultMode": "default",
     "allow": [
       "Bash",
       "Read(/work/**)",
