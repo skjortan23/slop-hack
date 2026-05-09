@@ -92,6 +92,27 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/service-enum && chmod +x /usr/local/bin/service-enum \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
+# --- entrypoint: seed project-level claude config into /work --------------
+# Subagents discover settings via the project-tree walk from the engagement
+# cwd, NOT via the home-dir path. So we need a copy of settings.json reachable
+# above the engagement dir (after the host volume is mounted).
+RUN cat > /usr/local/bin/slop-init <<'SH' && chmod +x /usr/local/bin/slop-init
+#!/bin/bash
+set -e
+if [ ! -e /work/.claude/settings.json ]; then
+  mkdir -p /work/.claude
+  cp -f /root/.claude/settings.json /work/.claude/settings.json
+fi
+if [ ! -e /work/.claude/CLAUDE.md ]; then
+  cp -f /root/.claude/CLAUDE.md /work/.claude/CLAUDE.md 2>/dev/null || true
+fi
+if [ -n "${ENGAGEMENT_DIR:-}" ]; then
+  mkdir -p "$ENGAGEMENT_DIR"
+  cd "$ENGAGEMENT_DIR"
+fi
+exec "$@"
+SH
+
 # --- engagement layout ---------------------------------------------------
 # /scope    — read-only mount: scope.yaml + API key configs
 # /work     — read-write: per-engagement output, findings, evidence
@@ -105,4 +126,5 @@ WORKDIR /work
 ENV ANTHROPIC_BASE_URL=http://host.docker.internal:8000 \
     ANTHROPIC_MODEL=local-model
 
+ENTRYPOINT ["/usr/local/bin/slop-init"]
 CMD ["/bin/bash"]
