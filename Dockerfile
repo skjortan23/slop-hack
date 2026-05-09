@@ -72,6 +72,18 @@ RUN mkdir -p /opt/wordlists /opt/resolvers \
 
 RUN nuclei -update-templates -silent || true
 
+# --- mitmproxy CA: pre-generate + install in system trust ----------------
+# Without this, anything inside the container that talks HTTPS through
+# mitmproxy (curl, wget, python, ...) gets cert-verification errors.
+# Chromium-based tools (katana) still need --ignore-certificate-errors
+# because they have their own NSS store.
+RUN mkdir -p /root/.mitmproxy \
+ && ( mitmdump --listen-port 19999 -q >/dev/null 2>&1 & MPID=$!; \
+      sleep 4; kill $MPID 2>/dev/null; wait 2>/dev/null || true ) \
+ && [ -f /root/.mitmproxy/mitmproxy-ca-cert.cer ] \
+ && cp /root/.mitmproxy/mitmproxy-ca-cert.cer /usr/local/share/ca-certificates/mitmproxy-ca.crt \
+ && update-ca-certificates
+
 # --- skills, agents, settings, standing instructions ---------------------
 # Skills live globally so `claude` finds them no matter the working directory.
 COPY .claude/skills /root/.claude/skills

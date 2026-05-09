@@ -52,33 +52,68 @@ auth flows, captures real session traffic.
 For unauth surface or simple GET-driven crawls. Uses katana's headless
 Chromium routed through mitmproxy.
 
+**Important — TLS interception:** mitmproxy presents a fake cert signed by
+its own CA. The container's system trust already has that CA installed at
+build time, so curl/wget/python work transparently. **Chromium uses its own
+NSS store and IGNORES the system trust**, so katana's headless mode needs
+`--chrome-arg "--ignore-certificate-errors"` explicitly.
+
 ```bash
 mkdir -p $ENGAGEMENT_DIR/webapp
 
+# Sanity check — kill any stale instance, then start fresh
+pkill -f "mitmdump.*8080" 2>/dev/null
+sleep 1
+
 # Start mitm in background (loopback only — the crawler is in-container)
-mitmdump \
+nohup mitmdump \
   -s /root/.claude/skills/webapp-capture/mitm-addon.py \
   --listen-host 127.0.0.1 --listen-port 8080 \
   --set confdir=/root/.mitmproxy \
   -q > $ENGAGEMENT_DIR/webapp/mitmdump.log 2>&1 &
-MITM_PID=$!
-sleep 2
+echo $! > $ENGAGEMENT_DIR/webapp/mitm.pid
+sleep 3
 
-# Drive katana through it
+# Verify proxy is alive (system trust knows about mitm CA, no -k needed)
+curl -s --proxy http://127.0.0.1:8080 -o /dev/null -w "proxy_check:%{http_code}\n" \
+  https://example.com -m 8
+
+# Drive katana through it. Chromium needs --ignore-certificate-errors
+# because its NSS store doesn't see our system-installed mitm CA.
 katana -u https://<target> \
   -headless -jc -kf all \
   -depth 3 -fs rdn \
   -proxy http://127.0.0.1:8080 \
+  -system-chrome \
+  --chrome-arg "--ignore-certificate-errors" \
+  --chrome-arg "--no-sandbox" \
   -silent \
   -o $ENGAGEMENT_DIR/webapp/katana.txt
 
-kill $MITM_PID
-wc -l $ENGAGEMENT_DIR/webapp/flows.jsonl
+# Tear down
+kill "$(cat $ENGAGEMENT_DIR/webapp/mitm.pid)" 2>/dev/null
+rm -f $ENGAGEMENT_DIR/webapp/mitm.pid
+wc -l $ENGAGEMENT_DIR/webapp/flows.jsonl 2>/dev/null
 ```
 
 Katana with `-headless -jc` runs JS, follows links, submits non-destructive
 forms. Routing it through mitmproxy means every request it makes lands in
 flows.jsonl just like a manual browser would.
+
+### Troubleshooting auto mode
+
+- **Empty flows.jsonl** → check `$ENGAGEMENT_DIR/webapp/mitmdump.log`. If
+  nothing logged, the proxy didn't start; ports may be blocked or the addon
+  errored. If you see scope-block lines, the target wasn't matched in
+  `scope.yaml`.
+- **`HTTP 000` from curl through proxy** → mitmproxy is dead (check pid),
+  or the curl is missing `--proxy http://127.0.0.1:8080`.
+- **katana finishes with 0 URLs** → almost always Chromium TLS errors. Add
+  `--chrome-arg "--ignore-certificate-errors"`. If still empty, run
+  `katana ... -v` to see the actual error.
+- **`Exit code 144`** from `pkill` is normal — it means "no matching
+  processes" (it's exit-after-signal arithmetic in some shells); the
+  command did its job.
 
 ## Combined mode
 
