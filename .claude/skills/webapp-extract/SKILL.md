@@ -85,3 +85,37 @@ jq -r '.params.query[], .params.body[]' $ENDPOINTS | sort -u
 
 - `webapp-fuzz` — replay endpoints with injection payloads
 - Optional `arjun -u <url>` per endpoint to find HIDDEN params not seen in capture
+
+## Alternative input — OpenAPI / Swagger spec
+
+If the target exposes `/openapi.json`, `/swagger.json`, or you have a spec
+file, import it directly into `endpoints.jsonl` (merged with any existing
+proxy-captured data):
+
+```bash
+# Pull spec
+curl -sk https://<target>/openapi.json -o $ENGAGEMENT_DIR/webapp/openapi.json
+
+# Import — uses the spec's own servers[] section
+openapi-import $ENGAGEMENT_DIR/webapp/openapi.json
+
+# Override server (when spec has localhost / placeholder URLs)
+openapi-import $ENGAGEMENT_DIR/webapp/openapi.json --base-url https://app.codelight.ai
+
+# Force a host when spec omits servers[]
+openapi-import $ENGAGEMENT_DIR/webapp/openapi.json --default-host app.codelight.ai
+```
+
+The importer:
+- Parses OpenAPI 3.x AND Swagger 2.0 specs
+- Extracts query / body / path parameters per operation
+- Reads `securitySchemes` to tag auth as `bearer`/`basic`/`apikey`/`none`
+- Resolves request `content-type` from `requestBody.content`
+- Picks the first 2xx response code
+- Merges by `(method, host, path, content-type)` — re-running adds new params,
+  doesn't duplicate endpoints
+- Tags imported records with `"source": "openapi-import"`
+
+After import, `webapp-fuzz` consumes the same `endpoints.jsonl` with no
+changes — it doesn't care whether endpoints came from a proxy capture or a
+spec.

@@ -103,6 +103,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/scope-check && chmod +x /usr/local/bin/scope-check \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/service-enum/service-enum.py "$@"\n' \
         > /usr/local/bin/service-enum && chmod +x /usr/local/bin/service-enum \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/webapp-extract/openapi-import.py "$@"\n' \
+        > /usr/local/bin/openapi-import && chmod +x /usr/local/bin/openapi-import \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------
