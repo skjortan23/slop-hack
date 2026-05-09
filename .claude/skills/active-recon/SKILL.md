@@ -47,7 +47,7 @@ done
 ### 2. CDN / WAF detection (avoid wasting scans + report attack-surface intel)
 
 ```bash
-cdncheck -i $ENGAGEMENT_DIR/recon/active/ips.txt -resp -json \
+cdncheck -i $ENGAGEMENT_DIR/recon/active/ips.txt -resp -jsonl -silent \
   > $ENGAGEMENT_DIR/recon/active/cdncheck.json
 
 jq -r 'select(.cdn==null and .waf==null) | .input' \
@@ -126,24 +126,81 @@ jq -r 'select(.title | test("admin|login|debug|phpmyadmin|jenkins|grafana|kibana
    $ENGAGEMENT_DIR/recon/active/httpx.json
 ```
 
-### 4. TLS cert intel (SAN pivots)
+### 4. TLS cert intel — aggressive SAN pivots
+
+This step often finds hosts that subdomain enum + crt.sh missed. Run tlsx
+against BOTH the live-hosts list AND the raw IP list (so we catch hosts
+that don't have public DNS but live on a known IP).
 
 ```bash
+# (a) Pull SANs from confirmed live web hosts
 tlsx -l $ENGAGEMENT_DIR/recon/active/live-hosts.txt \
-     -san -cn -json -silent \
-  > $ENGAGEMENT_DIR/recon/active/tlsx.json
+     -san -cn -ja3 -json -silent \
+  > $ENGAGEMENT_DIR/recon/active/tlsx-hosts.json
+
+# (b) Pull SANs by connecting to each IP on common TLS ports (443, 8443, 993, 995, 465, 636)
+for p in 443 8443 993 995 465 636; do
+  tlsx -l $ENGAGEMENT_DIR/recon/active/ips.txt -p $p \
+       -san -cn -json -silent \
+    >> $ENGAGEMENT_DIR/recon/active/tlsx-ips.json
+done
+
+# Merge SAN lists from BOTH sources + Wayback URLs hostnames + crt.sh hits
+{
+  jq -r '.subject_an[]?, .subject_cn?' \
+     $ENGAGEMENT_DIR/recon/active/tlsx-hosts.json \
+     $ENGAGEMENT_DIR/recon/active/tlsx-ips.json 2>/dev/null
+  cat $ENGAGEMENT_DIR/recon/passive/crtsh.txt 2>/dev/null
+  awk -F/ '{print $3}' $ENGAGEMENT_DIR/recon/passive/wayback.txt 2>/dev/null
+} | sed 's/^\*\.//' | sort -u | grep -E '\.[a-zA-Z]{2,}$' \
+  > $ENGAGEMENT_DIR/recon/active/all-known-hosts.txt
 ```
 
-Extract NEW hostnames from SANs and re-run scope-check before adding:
+Wildcard SANs (e.g. `*.codelight.ai`) tell you the cert covers everything
+under that label — enumerate aggressively. For each candidate name, check
+scope, resolve, then add:
 
 ```bash
-jq -r '.subject_an[]?' $ENGAGEMENT_DIR/recon/active/tlsx.json | sort -u \
-  > $ENGAGEMENT_DIR/recon/active/new-sans.txt
+# Common subdomain prefixes to try when a wildcard cert is observed
+for prefix in www app dev stage staging prod admin api auth login portal \
+              dashboard internal vpn mail webmail smtp imap ftp git \
+              gitlab jenkins grafana kibana metrics status docs help \
+              support cdn assets static media beta old test demo qa; do
+  for root in $(jq -r '.subject_an[]?' $ENGAGEMENT_DIR/recon/active/tlsx-*.json \
+                  | grep '^\*\.' | sed 's/^\*\.//' | sort -u); do
+    candidate="${prefix}.${root}"
+    python3 /root/.claude/skills/scope-check/check.py "$candidate" >/dev/null 2>&1 || continue
+    # Resolve and add only if it actually has a record
+    if dnsx -silent <<<"$candidate" | grep -q .; then
+      findings host-set "$candidate" --hostname "$candidate" \
+        --note "wildcard SAN brute: $prefix.$root"
+      echo "$candidate" >> $ENGAGEMENT_DIR/recon/active/all-known-hosts.txt
+    fi
+  done
+done
+```
+
+Then add every NEW resolvable name from the merged list:
+
+```bash
+sort -u $ENGAGEMENT_DIR/recon/active/all-known-hosts.txt \
+  > $ENGAGEMENT_DIR/recon/active/all-known-hosts.dedup.txt
+mv $ENGAGEMENT_DIR/recon/active/all-known-hosts.dedup.txt \
+   $ENGAGEMENT_DIR/recon/active/all-known-hosts.txt
+
+dnsx -l $ENGAGEMENT_DIR/recon/active/all-known-hosts.txt \
+     -resp -a -silent -json \
+  > $ENGAGEMENT_DIR/recon/active/dnsx-pivot.json
+
+jq -r 'select(.a) | .host' $ENGAGEMENT_DIR/recon/active/dnsx-pivot.json | sort -u \
+  > $ENGAGEMENT_DIR/recon/active/live-hosts-after-pivot.txt
 
 while read h; do
   python3 /root/.claude/skills/scope-check/check.py "$h" >/dev/null 2>&1 \
-    && findings host-set "$h" --note "tlsx: SAN pivot"
-done < $ENGAGEMENT_DIR/recon/active/new-sans.txt
+    && findings host-set "$h" --note "cert/wayback pivot"
+done < $ENGAGEMENT_DIR/recon/active/live-hosts-after-pivot.txt
+
+echo "Pivoted hosts found: $(wc -l < $ENGAGEMENT_DIR/recon/active/live-hosts-after-pivot.txt)"
 ```
 
 ### 5. Port scan (non-CDN IPs only)

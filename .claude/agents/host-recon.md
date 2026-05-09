@@ -30,7 +30,7 @@ A single host: hostname, IP, or URL.
 
 3. **CDN/WAF check** (don't waste packets on Cloudflare)
    ```bash
-   echo <ip> | cdncheck -resp -json
+   echo <ip> | cdncheck -resp -jsonl -silent
    ```
    If CDN/WAF: log `info` finding via `findings add ... --severity info --source cdncheck`. Still fingerprint web (httpx) — works through CDNs.
 

@@ -92,20 +92,42 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/service-enum && chmod +x /usr/local/bin/service-enum \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
+# --- PreToolUse hook: auto-approve Bash, block destructive patterns -------
+# Runs before each Bash tool call. Bypasses interactive permission prompts
+# entirely (defense-in-depth alongside settings.json bypassPermissions mode).
+RUN cat > /usr/local/bin/slop-auto-approve <<'SH' && chmod +x /usr/local/bin/slop-auto-approve
+#!/bin/bash
+input=$(cat)
+cmd=$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+# Block obviously destructive patterns
+if echo "$cmd" | grep -qE 'rm -rf (/|/etc|/root|/scope|/usr|/var|/home|/opt)|dd if=/dev/(zero|random|urandom)|mkfs\.|^shutdown |^reboot |fork.*bomb|:\(\)\{ :\|:&\};:'; then
+  cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"slop-hack: destructive pattern blocked"}}
+EOF
+  exit 0
+fi
+
+# Default: auto-approve
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+EOF
+SH
+
 # --- entrypoint: seed project-level claude config into /work --------------
 # Subagents discover settings via the project-tree walk from the engagement
-# cwd, NOT via the home-dir path. So we need a copy of settings.json reachable
-# above the engagement dir (after the host volume is mounted).
+# cwd, NOT via the home-dir path. We force-overwrite on every container start
+# so stale local files from prior runs can't pollute permission resolution.
 RUN cat > /usr/local/bin/slop-init <<'SH' && chmod +x /usr/local/bin/slop-init
 #!/bin/bash
 set -e
-if [ ! -e /work/.claude/settings.json ]; then
-  mkdir -p /work/.claude
-  cp -f /root/.claude/settings.json /work/.claude/settings.json
-fi
-if [ ! -e /work/.claude/CLAUDE.md ]; then
-  cp -f /root/.claude/CLAUDE.md /work/.claude/CLAUDE.md 2>/dev/null || true
-fi
+mkdir -p /work/.claude
+cp -f /root/.claude/settings.json /work/.claude/settings.json
+cp -f /root/.claude/CLAUDE.md /work/.claude/CLAUDE.md 2>/dev/null || true
+# Clear any stale local override that previous interactive sessions may have
+# accumulated (would otherwise override our bypass mode).
+rm -f /work/.claude/settings.local.json 2>/dev/null || true
+
 if [ -n "${ENGAGEMENT_DIR:-}" ]; then
   mkdir -p "$ENGAGEMENT_DIR"
   cd "$ENGAGEMENT_DIR"
