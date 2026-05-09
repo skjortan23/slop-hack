@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ldap-utils \
       openssl ncat \
       iproute2 procps \
+      file vim less \
     && rm -rf /var/lib/apt/lists/* \
     && pipx ensurepath
 

@@ -46,13 +46,17 @@ curl -s "https://crt.sh/?q=%25.<target>&output=json" \
   > $ENGAGEMENT_DIR/recon/passive/crtsh.txt
 ```
 
-Merge unique subdomains:
+Merge unique subdomains. **Filter to valid hostnames** — chaos and others
+emit error/banner lines (`[FTL] PDCP_API_KEY not specified`, `[INF] Current
+version`, etc.) that pollute the list if you just `cat` them in:
 
 ```bash
 { jq -r '.host' $ENGAGEMENT_DIR/recon/passive/subfinder.json 2>/dev/null;
   jq -r '.name' $ENGAGEMENT_DIR/recon/passive/amass.json 2>/dev/null;
   cat $ENGAGEMENT_DIR/recon/passive/chaos.txt $ENGAGEMENT_DIR/recon/passive/crtsh.txt 2>/dev/null;
-} | grep -v '^$' | sort -u > $ENGAGEMENT_DIR/recon/passive/subdomains.txt
+} | grep -E '^[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$' \
+  | tr '[:upper:]' '[:lower:]' \
+  | sort -u > $ENGAGEMENT_DIR/recon/passive/subdomains.txt
 
 wc -l $ENGAGEMENT_DIR/recon/passive/subdomains.txt
 ```

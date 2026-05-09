@@ -178,6 +178,45 @@ intel between sessions.
 - `/root/.claude/skills/` — skill playbooks (load via descriptions)
 - `/opt/resolvers/resolvers.txt` — public resolvers for puredns/dnsx
 
+## When NOT to keep digging
+
+You are paying wall-clock time and tokens. **Stop early when the surface is
+exhausted.** Specifically:
+
+- **Targets all behind a CDN/WAF (Cloudflare, Akamai, …) with a single
+  wildcard cert and the same SPA**: don't run port scans against CDN IPs;
+  they're shared infrastructure. Don't fuzz paths blindly — hit the
+  documented surface (OpenAPI / GraphQL introspection) first.
+- **Static SPA with no backend visible**: `findings export-md` and stop.
+  Note the SPA bundle hash and tech stack; further enum will return
+  nothing actionable without auth or a reachable origin IP.
+- **Diminishing returns**: if 30+ minutes of recon yielded only `info` findings, stop and ask the user for direction (auth credentials? out-of-band info? a different scope?). Don't burn another hour producing more `info`.
+
+## OpenAPI / spec-driven shortcut
+
+When httpx fingerprints a host as serving FastAPI / Swagger / OpenAPI, OR
+when `/openapi.json` returns 200, **import the spec directly** instead of
+fuzzing for endpoints:
+
+```bash
+curl -sk https://<host>/openapi.json -o $ENGAGEMENT_DIR/webapp/openapi.json
+openapi-import $ENGAGEMENT_DIR/webapp/openapi.json --base-url https://<host>
+# now endpoints.jsonl has every documented route — feed to webapp-fuzz
+```
+
+This is cheaper, more accurate, and finds endpoints fuzzers miss.
+
+## Wordlist paths (use SecLists, not dirb)
+
+The image ships `seclists` (apt). Use these paths:
+
+- `/usr/share/seclists/Discovery/Web-Content/quickhits.txt` — top-signal
+- `/usr/share/seclists/Discovery/Web-Content/raft-small-directories.txt`
+- `/usr/share/seclists/Discovery/Web-Content/raft-small-files.txt`
+- `/usr/share/seclists/Discovery/Web-Content/common.txt`
+
+`/usr/share/wordlists/dirb/common.txt` does **not** exist in this image.
+
 ## Use parallelism via subagents
 
 When investigating multiple hosts, **dispatch `host-recon` subagents in
