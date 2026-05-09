@@ -132,15 +132,31 @@ Recon is the means; these are the ends. Always be looking for:
 - Open redirects
 - SSRF entry points in URL params
 
-## Severity rubric
+## Severity rubric — STRICT
 
-| Severity | Examples |
+A finding's severity MUST come from **observed evidence**, never inferred
+from circumstantial signals. Public Swagger ≠ unauth endpoints. Listed in
+spec ≠ actually reachable. Use the table — and if you can't show the
+evidence column for a level, downgrade.
+
+| Severity | Required evidence |
 |---|---|
-| **critical** | Pre-auth RCE, exposed unauthenticated database, default creds on prod, hardcoded AWS/API keys in code, full source code disclosure |
-| **high** | SQLi, SSRF to internal services, auth bypass, exposed admin panel without auth, subdomain takeover, sensitive file disclosure (.git, .env) |
-| **medium** | Outdated software with known CVEs, sensitive info disclosure, weak crypto, CSRF on auth'd endpoints, missing rate limits on login |
-| **low** | Version disclosure, missing security headers, debug pages, default install pages, verbose error messages |
-| **info** | CDN/WAF detection, OSINT findings, service inventory, technology fingerprints |
+| **critical** | Pre-auth RCE (proven with command execution), exposed DB returning real records on unauth query, default creds accepted with successful login, hardcoded long-lived secret/key found in retrieved file, full source code disclosure (e.g. `.git/HEAD` returns repo content) |
+| **high** | SQLi proven by error/time-based response, SSRF proven by OOB callback or internal IP fetch, IDOR proven by reading another user's data, auth bypass demonstrated with 200+real-data on a path documented as protected, subdomain takeover where the upstream is registrable, .env / id_rsa / backup file directly retrieved |
+| **medium** | Outdated software with KNOWN exploitable CVEs (matched, not just version-listed), CSRF demonstrated on auth'd state-changing endpoint, weak crypto where cipher is actually negotiable, sensitive PII disclosure |
+| **low** | Server/version header disclosure, missing security headers, default install pages, debug pages reachable, verbose error messages, **operational config disclosure with no secrets** (worker counts, feature flags) |
+| **info** | CDN/WAF detection, OSINT, service inventory, fingerprints, wildcard certs, rate-limit observations, 405-instead-of-401 (HTTP standards behavior, not a vuln) |
+
+### Anti-inflation rules
+
+1. **No "critical" without 200-with-real-data evidence in the finding.**
+   Listing endpoints in a spec is `info`. Confirming they execute pre-auth
+   with sensitive data is `critical`.
+2. **Operational config (worker counts, max_tokens, semgrep flag) is `low`**, not critical/high. It only escalates if it leaks a secret, internal hostname, or DB connection string.
+3. **HTTP method response codes are not vulns by themselves.** A 405 on an unsupported method, or a 401 on protected paths, is correct behavior. Don't log it as a vuln.
+4. **Don't double-log.** Re-running a check that already produced a
+   finding should NOT create another finding with a slightly different
+   title. Run `findings show <host>` first; if the finding exists, skip.
 
 ## When unsure if it's a finding
 

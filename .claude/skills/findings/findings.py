@@ -25,6 +25,37 @@ except ImportError:
 
 SEVERITIES = ["info", "low", "medium", "high", "critical"]
 
+# Map common scheme/service names to their transport so non-standard port specs
+# like "443/https" get normalized to "443/tcp" — keeps reports consistent.
+_SCHEME_TO_PROTO = {
+    "http": "tcp", "https": "tcp", "ssh": "tcp", "ftp": "tcp", "smtp": "tcp",
+    "smtps": "tcp", "imap": "tcp", "imaps": "tcp", "pop3": "tcp", "pop3s": "tcp",
+    "ldap": "tcp", "ldaps": "tcp", "smb": "tcp", "rdp": "tcp", "vnc": "tcp",
+    "mysql": "tcp", "postgres": "tcp", "redis": "tcp", "mongodb": "tcp",
+    "elasticsearch": "tcp", "memcached": "tcp", "telnet": "tcp",
+    "dns": "udp", "ntp": "udp", "snmp": "udp", "tftp": "udp", "dhcp": "udp",
+}
+
+
+def normalize_port(port_str: str) -> str:
+    """Normalize a port argument to '<num>/<tcp|udp>' form.
+
+    Accepts: '443', '443/tcp', '443/udp', '443/https' (→ '443/tcp')
+    """
+    if not port_str:
+        return port_str
+    if "/" not in port_str:
+        return f"{port_str}/tcp"
+    num, _, proto = port_str.partition("/")
+    proto = proto.lower()
+    if proto in ("tcp", "udp"):
+        return f"{num}/{proto}"
+    if proto in _SCHEME_TO_PROTO:
+        return f"{num}/{_SCHEME_TO_PROTO[proto]}"
+    # Unknown — leave as-is but the caller probably has a typo
+    print(f"warning: unknown port proto '{proto}' in '{port_str}' — keeping as-is", file=sys.stderr)
+    return port_str
+
 
 def engagement_dir():
     d = Path(os.environ.get("ENGAGEMENT_DIR", "/work/default"))
@@ -101,7 +132,7 @@ def cmd_host_set(args):
 
 def cmd_service_set(args):
     h = load_host(args.host)
-    key = args.port_proto
+    key = normalize_port(args.port_proto)
     svc = h["services"].get(key) or {"findings": []}
     if args.service:
         svc["service"] = args.service
@@ -136,7 +167,8 @@ def cmd_add(args):
     }
     finding = {k: v for k, v in finding.items() if v is not None}
     if args.port:
-        svc = h["services"].setdefault(args.port, {"findings": []})
+        port_key = normalize_port(args.port)
+        svc = h["services"].setdefault(port_key, {"findings": []})
         svc.setdefault("findings", []).append(finding)
     else:
         h["host_findings"].append(finding)

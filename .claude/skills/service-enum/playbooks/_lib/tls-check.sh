@@ -19,10 +19,15 @@ s_args=()
     | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>/dev/null
 
   echo
-  echo "=== tlsx (versions, ciphers, validation flags) ==="
-  echo "${host}:${port}" | tlsx -tls-version -cipher -san -cn \
+  echo "=== tlsx validation (versions/ciphers/expired/self-signed/wildcard) ==="
+  # NOTE: -san/-cn can NOT be combined with other probes (tlsx fatal error),
+  # so we split into two passes.
+  echo "${host}:${port}" | tlsx -tls-version -cipher \
        -expired -self-signed -mismatched -untrusted -wildcard-cert \
        -json -silent 2>/dev/null
+  echo
+  echo "=== tlsx subject (san/cn) ==="
+  echo "${host}:${port}" | tlsx -san -cn -json -silent 2>/dev/null
 
   echo
   echo "=== nmap ssl-enum-ciphers ==="
@@ -73,10 +78,17 @@ if grep -qE '"untrusted":\s*true' "$out"; then
     --title "Untrusted TLS certificate chain" \
     --evidence "tlsx flagged untrusted" --source tlsx
 fi
-if grep -qE '"wildcard_cert":\s*true' "$out"; then
+if grep -qE '"wildcard_certificate":\s*true' "$out"; then
   findings add "$host" --port "$port/tcp" --severity info \
     --title "Wildcard TLS certificate in use" \
-    --evidence "tlsx flagged wildcard_cert" --source tlsx
+    --evidence "tlsx flagged wildcard_certificate=true" --source tlsx
+fi
+# Fallback: extract wildcard SANs from openssl X509 output (when tlsx is silent)
+if grep -qE 'DNS:\*\.' "$out" && ! grep -qE '"wildcard_certificate":\s*true' "$out"; then
+  wsan=$(grep -oE 'DNS:\*\.[a-zA-Z0-9.-]+' "$out" | head -3 | paste -sd',')
+  findings add "$host" --port "$port/tcp" --severity info \
+    --title "Wildcard TLS certificate (from openssl SAN)" \
+    --evidence "wildcard SANs: $wsan" --source openssl
 fi
 
 # Weak protocols (anything older than TLSv1.2 is medium)
