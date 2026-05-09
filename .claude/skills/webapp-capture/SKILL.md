@@ -19,17 +19,14 @@ fuzzing. Both modes write the same `flows.jsonl`.
 Use this when the user wants to log in themselves and click around. Realistic
 auth flows, captures real session traffic.
 
-1. Start mitmproxy with the slop-hack scope-aware addon:
+1. Start mitmproxy via the wrapper (pidfile-based, idempotent, tracks
+   process for clean teardown):
    ```bash
-   mkdir -p $ENGAGEMENT_DIR/webapp
-   mitmdump \
-     -s /root/.claude/skills/webapp-capture/mitm-addon.py \
-     --listen-host 0.0.0.0 --listen-port 8080 \
-     --set confdir=/root/.mitmproxy \
-     > $ENGAGEMENT_DIR/webapp/mitmdump.log 2>&1 &
-   echo $! > $ENGAGEMENT_DIR/webapp/mitm.pid
-   sleep 2
+   MITM_HOST=0.0.0.0 mitm-start
    ```
+   Wrapper output: `mitm started: pid=<N>  proxy=http://0.0.0.0:8080`.
+   Logs go to `$ENGAGEMENT_DIR/webapp/mitmdump.log`, pid stored in
+   `$ENGAGEMENT_DIR/webapp/mitm.pid`.
 
 2. Tell the user (briefly):
    - Set host browser HTTP/HTTPS proxy to **`localhost:8080`**
@@ -43,7 +40,7 @@ auth flows, captures real session traffic.
 
 5. When the user signals they're done:
    ```bash
-   kill "$(cat $ENGAGEMENT_DIR/webapp/mitm.pid)" 2>/dev/null
+   mitm-stop
    wc -l $ENGAGEMENT_DIR/webapp/flows.jsonl
    ```
 
@@ -59,24 +56,8 @@ NSS store and IGNORES the system trust**, so katana's headless mode needs
 `--chrome-arg "--ignore-certificate-errors"` explicitly.
 
 ```bash
-mkdir -p $ENGAGEMENT_DIR/webapp
-
-# Sanity check — kill any stale instance, then start fresh
-pkill -f "mitmdump.*8080" 2>/dev/null
-sleep 1
-
-# Start mitm in background (loopback only — the crawler is in-container)
-nohup mitmdump \
-  -s /root/.claude/skills/webapp-capture/mitm-addon.py \
-  --listen-host 127.0.0.1 --listen-port 8080 \
-  --set confdir=/root/.mitmproxy \
-  -q > $ENGAGEMENT_DIR/webapp/mitmdump.log 2>&1 &
-echo $! > $ENGAGEMENT_DIR/webapp/mitm.pid
-sleep 3
-
-# Verify proxy is alive (system trust knows about mitm CA, no -k needed)
-curl -s --proxy http://127.0.0.1:8080 -o /dev/null -w "proxy_check:%{http_code}\n" \
-  https://example.com -m 8
+# Start mitm via wrapper (loopback only — crawler is in-container)
+mitm-start
 
 # Drive katana through it. Chromium needs --ignore-certificate-errors
 # because its NSS store doesn't see our system-installed mitm CA.
@@ -91,8 +72,7 @@ katana -u https://<target> \
   -o $ENGAGEMENT_DIR/webapp/katana.txt
 
 # Tear down
-kill "$(cat $ENGAGEMENT_DIR/webapp/mitm.pid)" 2>/dev/null
-rm -f $ENGAGEMENT_DIR/webapp/mitm.pid
+mitm-stop
 wc -l $ENGAGEMENT_DIR/webapp/flows.jsonl 2>/dev/null
 ```
 

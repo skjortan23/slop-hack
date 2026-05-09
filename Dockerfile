@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       redis-tools \
       ldap-utils \
       openssl ncat \
+      iproute2 procps \
     && rm -rf /var/lib/apt/lists/* \
     && pipx ensurepath
 
@@ -103,6 +104,74 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/service-enum/service-enum.py "$@"\n' \
         > /usr/local/bin/service-enum && chmod +x /usr/local/bin/service-enum \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
+
+# --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------
+# Avoids the "pkill -f matches its own parent shell" footgun by tracking
+# the mitmdump pid in a file under $ENGAGEMENT_DIR/webapp/.
+RUN cat > /usr/local/bin/mitm-start <<'SH' && chmod +x /usr/local/bin/mitm-start
+#!/bin/bash
+set -u
+ENG="${ENGAGEMENT_DIR:-/work/default}"
+HOST="${MITM_HOST:-127.0.0.1}"
+PORT="${MITM_PORT:-8080}"
+mkdir -p "$ENG/webapp"
+PIDFILE="$ENG/webapp/mitm.pid"
+LOGFILE="$ENG/webapp/mitmdump.log"
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "mitmdump already running (pid=$(cat "$PIDFILE"))"
+  exit 0
+fi
+
+# Truncate the log so we can detect immediate-exit (empty log = startup error)
+: > "$LOGFILE"
+
+nohup mitmdump \
+  -s /root/.claude/skills/webapp-capture/mitm-addon.py \
+  --listen-host "$HOST" --listen-port "$PORT" \
+  --set confdir=/root/.mitmproxy \
+  > "$LOGFILE" 2>&1 < /dev/null &
+PID=$!
+echo "$PID" > "$PIDFILE"
+sleep 1
+
+# If mitmdump died on startup, surface why.
+if ! kill -0 "$PID" 2>/dev/null; then
+  echo "mitmdump exited immediately. log:" >&2
+  cat "$LOGFILE" >&2
+  rm -f "$PIDFILE"
+  exit 1
+fi
+
+# Wait for proxy to start listening on the port. Don't try to make a real
+# request — out-of-scope targets get 403 from our addon, which would look
+# like a failure even though the proxy is healthy.
+for _ in 1 2 3 4 5 6 7 8; do
+  if (exec 3<>/dev/tcp/${HOST}/${PORT}) 2>/dev/null; then
+    exec 3<&- 3>&-
+    echo "mitm started: pid=$PID  proxy=http://${HOST}:${PORT}"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "mitm failed to come up; tail of $LOGFILE:" >&2
+tail -20 "$LOGFILE" >&2
+kill "$PID" 2>/dev/null || true
+rm -f "$PIDFILE"
+exit 1
+SH
+
+RUN cat > /usr/local/bin/mitm-stop <<'SH' && chmod +x /usr/local/bin/mitm-stop
+#!/bin/bash
+ENG="${ENGAGEMENT_DIR:-/work/default}"
+PIDFILE="$ENG/webapp/mitm.pid"
+if [ -f "$PIDFILE" ]; then
+  kill "$(cat "$PIDFILE")" 2>/dev/null || true
+  rm -f "$PIDFILE"
+fi
+echo "mitm stopped"
+SH
 
 # --- PreToolUse hook: auto-approve Bash, block destructive patterns -------
 # Runs before each Bash tool call. Bypasses interactive permission prompts
