@@ -211,6 +211,24 @@ cp -f /root/.claude/CLAUDE.md /work/.claude/CLAUDE.md 2>/dev/null || true
 # accumulated (would otherwise override our bypass mode).
 rm -f /work/.claude/settings.local.json 2>/dev/null || true
 
+# Initialize /work as a git repo so Task subagents can create worktrees if
+# they ask for isolation. Without this, dispatching subagents fails with
+# "Cannot create agent worktree: not in a git repository".
+if [ ! -d /work/.git ]; then
+  git -C /work init -q -b main 2>/dev/null
+  git -C /work config user.email "agent@slop-hack.local" 2>/dev/null
+  git -C /work config user.name  "slop-hack-agent" 2>/dev/null
+  # Ignore engagement output and persisted state — they bloat any worktree
+  cat > /work/.gitignore <<GITIGN
+ENG-*/
+.claude/projects/
+.claude/todos/
+.claude/statsig/
+GITIGN
+  git -C /work add .gitignore .claude/CLAUDE.md .claude/settings.json 2>/dev/null
+  git -C /work commit -q -m "slop-hack init" 2>/dev/null || true
+fi
+
 if [ -n "${ENGAGEMENT_DIR:-}" ]; then
   mkdir -p "$ENGAGEMENT_DIR"
   cd "$ENGAGEMENT_DIR"
