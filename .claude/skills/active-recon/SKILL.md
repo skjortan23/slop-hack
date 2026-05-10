@@ -293,4 +293,33 @@ After completion, report:
 - New hostnames pivoted to via SAN
 - Run `findings list` and include the totals
 
-Then ask the user what to do next (deeper scan, vuln scan, exploit, more recon).
+## MANDATORY handoff to host-recon
+
+Active-recon does the **batched network ops once across all hosts**. The
+**per-host deep enumeration** (service-enum playbooks, web-enum,
+vuln-search, openapi-import) is what `host-recon` exists for, and it must
+run in parallel.
+
+After this skill finishes, if there are **>=4 live hosts**, you MUST
+dispatch `host-recon` subagents IN PARALLEL — one Task call per host, all
+in a single assistant message. Cap at 8 hosts per batch.
+
+```bash
+# get the list of live hosts that warrant deep enum (skip pure CDN-only)
+jq -r 'select(.a) | .host' $ENGAGEMENT_DIR/recon/active/dnsx.json | sort -u
+```
+
+For each host, dispatch a Task call like:
+```
+Task(subagent_type="host-recon", description="host-recon <host>",
+     prompt="Investigate <host>. Read its findings YAML, dispatch service-enum
+             per known port, run web-enum if web, vuln-search per fingerprinted
+             version. Return a JSON line summary.")
+```
+
+For 1-3 live hosts, you may skip subagent dispatch and run the per-host
+work inline (still call service-enum, web-enum, vuln-search per host;
+just no subagent overhead).
+
+Don't ask the user — just dispatch. The user can interrupt if they want
+something different.
