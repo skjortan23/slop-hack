@@ -178,6 +178,24 @@ intel between sessions.
 - `/root/.claude/skills/` — skill playbooks (load via descriptions)
 - `/opt/resolvers/resolvers.txt` — public resolvers for puredns/dnsx
 
+## Time budgets — don't blow them on slow tools
+
+The local model (qwen36) takes ~12s per turn. **Don't spend turns waiting on
+tools that hang for minutes.** Always wrap unknown-duration tools with `timeout`:
+
+| Tool | Bad pattern | Good pattern |
+|---|---|---|
+| theHarvester | `-b all` (10+ min, mostly fails) | `timeout 90 theHarvester -b crtsh,duckduckgo,bing,otx` |
+| amass | `enum -active` without `-timeout` | `amass enum -passive -timeout 5` |
+| nuclei | full template set without filter | `-tags <specific>` or `-severity high,critical`, `-timeout 8` |
+| naabu | `-p -` full sweep | `-top-ports 1000` first; expand only if interesting |
+| nmap | `-A -p-` on large netblocks | `-sV -sC -Pn` on already-discovered hosts only |
+| gau / waybackurls | unfiltered output | `| head -1000`; filter for interesting paths |
+| ffuf | massive wordlist on slow hosts | quickhits.txt first, raft-small if quickhits hit |
+
+**Apply `timeout N` liberally.** If a tool legitimately needs more time, the
+user can re-run with a higher timeout. Lost 5 minutes ≫ lost 30s.
+
 ## When NOT to keep digging
 
 You are paying wall-clock time and tokens. **Stop early when the surface is
@@ -223,12 +241,16 @@ When investigating multiple hosts, **dispatch `host-recon` subagents in
 parallel** instead of running tools serially. The Task tool fires N agents
 at once, each with its own context, returning structured JSON.
 
-Rules of thumb:
-- **1–3 hosts**: do them yourself inline.
-- **4–20 hosts**: dispatch `host-recon` in parallel — one Task call per host,
-  all in a single message.
+Rules of thumb (these are **mandatory**, not suggestions):
+- **1–3 live hosts**: do them yourself inline.
+- **4+ live hosts**: dispatch `host-recon` in parallel — one Task call per host, **all in a single message**. Do NOT iterate hosts serially with inline tool calls when you could parallelize.
 - **>20 hosts**: batch into groups of ~10–15 so the orchestrator context
   doesn't drown in returned data.
+
+Why this matters: each subagent has its own context window and runs against
+its own model call. 8 parallel subagents finish in ~the time of 1, not 8×.
+Serial inline enumeration of 6 hosts already cost us 13 minutes on a recent
+run when 4 minutes was achievable.
 
 Never serialize per-host enumeration when subagents can do it concurrently.
 The user is paying for wall-clock time, not token-by-token narration.

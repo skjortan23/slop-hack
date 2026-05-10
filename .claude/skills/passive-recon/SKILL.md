@@ -73,11 +73,22 @@ Skim for interesting endpoints (admin, debug, .git, .env, api, internal).
 ### 4. OSINT (emails, names)
 
 ```bash
-theHarvester -d <target> -b crtsh,duckduckgo,bing,otx \
+timeout 90 theHarvester -d <target> -b crtsh,duckduckgo,bing,otx \
   -f $ENGAGEMENT_DIR/recon/passive/harvester
 ```
 
-(Use `-b all` only if the user has all the relevant API keys configured.)
+**DO NOT use `-b all`.** It walks every supported source serially —
+including ones that require API keys we don't have, ones that rate-limit
+without warning, and ones that hang for minutes. Each "all" run typically
+takes 5–15 minutes and most sources fail anyway. The four sources above
+work without keys and finish in <90s.
+
+If you genuinely need more sources, add them ONE at a time after confirming
+the corresponding API key is set:
+- `securityTrails` — needs `SECURITYTRAILS_API_KEY`
+- `shodan` — needs `SHODAN_API_KEY`
+- `github-code` — needs `GITHUB_TOKEN`
+- `virustotal` — needs `VIRUSTOTAL_API_KEY`
 
 ### 5. Shodan (if SHODAN_API_KEY set)
 
