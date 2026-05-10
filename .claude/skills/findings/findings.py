@@ -284,7 +284,60 @@ def cmd_export_md(args):
         out.append(f"| {s} | {counts.get(s, 0)} |")
     out.append("")
 
-    out.append("## Findings\n")
+    # Per-host service inventory — services with their versions and CVE-tagged findings inline
+    out.append("## Service inventory by host\n")
+    has_any_service = False
+    for f in sorted(d.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text()) or {}
+        except Exception:
+            continue
+        host = data.get("host", "")
+        services = data.get("services") or {}
+        if not services and not data.get("host_findings"):
+            continue
+        out.append(f"### `{host}`")
+        meta = data.get("metadata") or {}
+        if meta:
+            meta_bits = []
+            if meta.get("asn"): meta_bits.append(f"ASN: `{meta['asn']}`")
+            if meta.get("cdn") is not None: meta_bits.append(f"CDN: `{meta['cdn']}`")
+            if meta.get("os_guess"): meta_bits.append(f"OS: `{meta['os_guess']}`")
+            if meta_bits:
+                out.append(" · ".join(meta_bits))
+        if not services:
+            out.append("_(no services recorded)_\n")
+            continue
+        for port_proto in sorted(services.keys()):
+            svc = services[port_proto] or {}
+            label = port_proto
+            descr_bits = []
+            if svc.get("service"): descr_bits.append(svc["service"])
+            if svc.get("product"): descr_bits.append(svc["product"])
+            if svc.get("version"): descr_bits.append(f"v{svc['version']}")
+            descr = " ".join(descr_bits) if descr_bits else "(unidentified)"
+            out.append(f"- **{label}** — {descr}")
+            if svc.get("banner"):
+                out.append(f"  _banner_: `{svc['banner'][:120]}`")
+            svc_findings = svc.get("findings") or []
+            if not svc_findings:
+                continue
+            # Sort findings by severity
+            svc_findings_sorted = sorted(
+                svc_findings,
+                key=lambda x: sev_rank.get(x.get("severity", "info"), 99),
+            )
+            for fi in svc_findings_sorted:
+                sev = fi.get("severity", "?").upper()
+                cve = f" {fi['cve']}" if fi.get("cve") else ""
+                out.append(f"  - [{sev}]{cve} {fi.get('title', '(no title)')}")
+        out.append("")
+    if not has_any_service:
+        # nothing rendered — fall through, the section header is still there
+        pass
+    out.append("")
+
+    out.append("## All findings (sorted by severity)\n")
     for fi in all_findings:
         sev = fi.get("severity", "?").upper()
         out.append(f"### [{sev}] {fi.get('title', '(no title)')}")

@@ -87,10 +87,20 @@ A single host: hostname, IP, or URL.
    - If `/openapi.json` returns 200, fetch and run `openapi-import`.
    - If user explicitly authorized fuzzing, optionally run `web-enum`.
 
-9. **Vuln correlation** for each detected `product:version`:
-   - Quick `searchsploit <product> <version>` → log info if PoCs exist.
-   - Run nuclei CVE templates for the product:
-     `nuclei -tags cve -id <product>-* -u https://<host>` (where applicable).
+9. **Vuln correlation — call `vuln-check` for every service with a version.** This is **mandatory** — without it the report can't show CVE matches per service.
+   ```bash
+   # for each (host, port, product, version) you set in step 6:
+   vuln-check <host> <port> <product> [version]
+   ```
+   `vuln-check` greps nuclei-templates/http/cves/ + nuclei-templates/http/vulnerabilities/ for templates matching the product, runs them against the target, runs searchsploit, and logs all hits as findings tied to the host+port (with `--cve` set when the template has a CVE id, `--source nuclei-cves` or `searchsploit`).
+
+   If you only have a `product` (no `version`), still call it — nuclei templates often fire on product alone:
+   ```bash
+   vuln-check 0x08.sec-t.org 443 wordpress
+   vuln-check 0x08.sec-t.org 443 wordpress 6.9.4
+   vuln-check api.example.com 443 nginx 1.24.0
+   vuln-check ftp.example.com 21 vsftpd 2.3.4
+   ```
 
 ## What you do NOT do
 
