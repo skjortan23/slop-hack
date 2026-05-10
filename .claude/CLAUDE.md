@@ -255,6 +255,24 @@ run when 4 minutes was achievable.
 Never serialize per-host enumeration when subagents can do it concurrently.
 The user is paying for wall-clock time, not token-by-token narration.
 
+### Critical: dispatch EARLY, before active-recon batching
+
+The mistake to avoid: running `active-recon` SKILL across all hosts FIRST
+(which uses lots of orchestrator turns), THEN trying to dispatch host-recon.
+By the time you finish active-recon batching, you've burned 30+ turns and
+hit max-turns before dispatch.
+
+**Correct flow:**
+1. `passive-recon` to get a list of candidate subdomains.
+2. `dnsx` once on the list to find which resolve.
+3. **Dispatch host-recon for each live host IN PARALLEL — single message, multiple Task calls.** Each subagent does its own dnsx/httpx/naabu/nmap/service-enum/vuln-search. You wait for all of them.
+4. Aggregate JSON summaries → final report.
+
+Do **not** run `active-recon` SKILL across all hosts as a separate phase
+when host-recon can do per-host active-recon in parallel. The active-recon
+SKILL is for the orchestrator only when there are 1–3 live hosts (dispatch
+overhead would dwarf the work).
+
 Other subagent dispatch patterns:
 - After `passive-recon` returns N subdomains → dispatch N `host-recon`
   agents to investigate each in parallel.
