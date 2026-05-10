@@ -37,14 +37,21 @@ QS_DIR = ENG_DIR / "recon" / "quickscan"
 # Ordered roughly by frequency-of-presence across attack surfaces.
 DEFAULT_PORTS = (
     "21,22,23,25,53,80,110,111,135,139,143,161,389,443,445,"
-    "465,514,587,623,636,993,995,1080,1433,1521,1723,2049,2082,"
-    "2083,2087,2096,2222,2375,2376,2483,2484,3000,3128,3268,"
-    "3306,3389,4443,4444,4500,4848,4949,5000,5060,5432,5601,"
-    "5672,5900,5984,5985,6379,6443,7000,7001,7077,7474,"
-    "8000,8005,8009,8020,8022,8080,8081,8086,8088,8090,8091,"
-    "8200,8443,8500,8530,8531,8649,8888,9000,9043,9080,9090,"
-    "9092,9100,9200,9300,9418,9990,9999,10000,11211,15672,"
-    "27017,27018,27019,28017,49152,50000"
+    "465,514,587,623,636,993,995,1080,"
+    # Databases (RDBMS, NoSQL, time-series, columnar)
+    "1433,1521,1830,2483,2484,3306,5432,33060,"  # mssql, oracle (+alt+ssl), mysql (+x-proto)
+    "5984,6379,6380,7474,7687,"                  # couchdb, redis (+tls), neo4j (+bolt)
+    "8086,8123,9042,9160,11211,"                 # influxdb, clickhouse, cassandra (native+thrift), memcached
+    "26257,27017,27018,27019,28015,28017,28018," # cockroachdb, mongodb (+http+rethinkdb)
+    # Message brokers / queues
+    "5672,9092,15672,"
+    # Web / proxy / dev tools
+    "1723,2049,2082,2083,2087,2096,2222,2375,2376,3000,3128,3268,"
+    "3389,4443,4444,4500,4848,4949,5000,5060,5601,5900,5985,"
+    "6443,7000,7001,7077,8000,8005,8009,8020,8022,8080,8081,"
+    "8088,8090,8091,8161,8200,8443,8500,8530,8531,8649,8888,"
+    "9000,9001,9043,9080,9090,9100,9200,9300,9418,9990,9999,"
+    "10000,16379,26379,49152,50000,50070,50090"
 )
 
 # Fallback service-name mapping when no other info available.
@@ -56,27 +63,35 @@ PORT_TO_SERVICE = {
     514: "syslog", 587: "smtp", 623: "ipmi", 636: "ldaps",
     993: "imaps", 995: "pop3s",
     1080: "socks", 1433: "mssql", 1521: "oracle", 1723: "pptp",
+    1830: "oracle",
     2049: "nfs", 2222: "ssh", 2375: "docker", 2376: "docker",
     2483: "oracle", 2484: "oracle",
     3000: "http", 3128: "http-proxy", 3268: "ldap-gc", 3306: "mysql",
     3389: "rdp", 4443: "https", 4848: "glassfish", 4949: "munin",
     5000: "http", 5060: "sip", 5432: "postgres", 5601: "kibana",
     5672: "amqp", 5900: "vnc", 5984: "couchdb", 5985: "winrm",
-    6379: "redis", 6443: "k8s-api",
+    6379: "redis", 6380: "redis", 6443: "k8s-api",
     7000: "http", 7001: "weblogic", 7077: "spark", 7474: "neo4j",
+    7687: "neo4j-bolt",
     8000: "http", 8005: "tomcat", 8009: "ajp", 8020: "hadoop-hdfs",
     8022: "ssh", 8080: "http", 8081: "http", 8086: "influxdb",
     8088: "http", 8090: "http", 8091: "couchbase",
+    8123: "clickhouse", 8161: "activemq",
     8200: "vault", 8443: "https", 8500: "consul", 8530: "wsus",
     8649: "ganglia", 8888: "http",
-    9000: "http", 9043: "websphere", 9080: "http", 9090: "http",
-    9092: "kafka", 9100: "jetdirect", 9200: "elasticsearch",
-    9300: "elasticsearch", 9418: "git", 9990: "wildfly",
-    9999: "http", 10000: "webmin", 11211: "memcached",
-    15672: "rabbitmq",
+    9000: "http", 9001: "supervisor", 9042: "cassandra",
+    9043: "websphere", 9080: "http", 9090: "http",
+    9092: "kafka", 9100: "jetdirect", 9160: "cassandra-thrift",
+    9200: "elasticsearch", 9300: "elasticsearch", 9418: "git",
+    9990: "wildfly", 9999: "http",
+    10000: "webmin", 11211: "memcached",
+    15672: "rabbitmq", 16379: "redis-cluster",
+    26257: "cockroachdb", 26379: "redis-sentinel",
     27017: "mongodb", 27018: "mongodb", 27019: "mongodb",
-    28017: "mongodb-http",
+    28015: "rethinkdb", 28017: "mongodb-http", 28018: "rethinkdb",
+    33060: "mysql-x",
     49152: "wmi-rpc", 50000: "sap",
+    50070: "hadoop-hdfs-web", 50090: "hadoop-hdfs-secondary",
 }
 
 
@@ -90,7 +105,7 @@ def run(cmd, timeout=600):
         return 1, "", str(e)
 
 
-def naabu_scan(target_file, ports, rate=1000):
+def naabu_scan(target_file, ports, rate=300):
     QS_DIR.mkdir(parents=True, exist_ok=True)
     out = QS_DIR / "naabu.json"
     out.unlink(missing_ok=True)
@@ -100,7 +115,7 @@ def naabu_scan(target_file, ports, rate=1000):
         "-l", str(target_file),
         "-p", ports,
         "-rate", str(rate),
-        "-c", "50",
+        "-c", "25",
         "-silent", "-json",
         "-o", str(out),
     ]
@@ -190,7 +205,8 @@ def main() -> int:
     ap.add_argument("-l", "--list")
     ap.add_argument("-p", "--ports", help="explicit port list (overrides default)")
     ap.add_argument("--full", action="store_true", help="full 1-65535 sweep (slow)")
-    ap.add_argument("--rate", type=int, default=1000)
+    ap.add_argument("--rate", type=int, default=300,
+                    help="packets per second (default 300; higher rates may trip upstream WAF/firewall rate limits)")
     ap.add_argument("--no-log", action="store_true")
     ap.add_argument("--no-http", action="store_true", help="skip httpx enrichment")
     ap.add_argument("--json", action="store_true")
