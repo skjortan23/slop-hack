@@ -162,7 +162,7 @@ def httpx_enrich(http_hits):
         "-l", str(in_file),
         "-title", "-tech-detect", "-server", "-status-code",
         "-no-color", "-silent", "-json",
-        "-timeout", "8",
+        "-timeout", "15",
         "-o", str(out_file),
     ]
     print(f"[httpx] {len(http_hits)} HTTP endpoints", file=sys.stderr)
@@ -174,8 +174,15 @@ def httpx_enrich(http_hits):
             for line in f:
                 try:
                     r = json.loads(line)
-                    url = r.get("url", "")
-                    by_target[url] = {
+                    # Key by (host, port) since httpx normalizes URLs
+                    # (drops :443 from https, :80 from http)
+                    host = r.get("host") or r.get("input", "")
+                    port = r.get("port", "")
+                    try:
+                        port = int(port)
+                    except (ValueError, TypeError):
+                        continue
+                    by_target[(host, port)] = {
                         "title": r.get("title", ""),
                         "tech": r.get("tech") or [],
                         "server": r.get("webserver", "") or r.get("server", ""),
@@ -237,7 +244,29 @@ def main() -> int:
     http_ports = {80, 443, 8000, 8080, 8081, 8088, 8443, 8888, 9000, 9080, 9090, 9200, 5000, 5601, 7474, 8500}
     http_hits = [h for h in hits if h["port"] in http_ports or h["tls"]]
 
+    # Cloudflare/WAF fronted hosts often drop naabu's CONNECT scan but still
+    # respond to HTTP probes. So always run httpx independently on common
+    # web ports for every target, and merge those into the hits set.
+    if not args.no_http:
+        web_probe_ports = [80, 443, 8080, 8443, 8000, 8888]
+        for target in targets:
+            for port in web_probe_ports:
+                tls = port in (443, 8443)
+                stub = {"host": target, "ip": target, "port": port, "proto": "tcp", "tls": tls}
+                if any(h["host"] == target and h["port"] == port for h in http_hits):
+                    continue
+                http_hits.append(stub)
+
     enrich = {} if args.no_http else httpx_enrich(http_hits)
+
+    # Merge httpx-confirmed ports back into hits if naabu missed them but
+    # httpx got a response — those are real reachable services.
+    seen = {(h["host"], h["port"]) for h in hits}
+    for h in http_hits:
+        key = (h["host"], h["port"])
+        if key in enrich and key not in seen:
+            hits.append(h)
+            seen.add(key)
 
     services_logged = []
     for h in hits:
@@ -248,10 +277,8 @@ def main() -> int:
         banner = ""
 
         # Match this hit to its httpx enrichment
-        scheme = "https" if h["tls"] or port in (443, 8443, 4443) else "http"
-        url_key = f"{scheme}://{host}:{port}"
-        if url_key in enrich:
-            e = enrich[url_key]
+        if (host, port) in enrich:
+            e = enrich[(host, port)]
             if e.get("server"):
                 # "nginx/1.24.0" → product=nginx, version=1.24.0
                 srv = e["server"]
