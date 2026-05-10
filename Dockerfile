@@ -108,6 +108,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/openapi-import && chmod +x /usr/local/bin/openapi-import \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/vuln-search/vuln-check.py "$@"\n' \
         > /usr/local/bin/vuln-check && chmod +x /usr/local/bin/vuln-check \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/quickscan/quickscan.py "$@"\n' \
+        > /usr/local/bin/quickscan && chmod +x /usr/local/bin/quickscan \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------
