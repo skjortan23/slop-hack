@@ -201,6 +201,62 @@ def cmd_list(args):
     print(json.dumps(rows, indent=2))
 
 
+def cmd_services(args):
+    d = engagement_dir() / "findings" / "hosts"
+    rows = []
+    for f in sorted(d.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text()) or {}
+        except Exception:
+            continue
+        host = data.get("host", "")
+        for port_proto, svc in (data.get("services") or {}).items():
+            rows.append({
+                "host": host,
+                "port": port_proto,
+                "service": svc.get("service", "") or "",
+                "product": svc.get("product", "") or "",
+                "version": svc.get("version", "") or "",
+                "findings": len(svc.get("findings") or []),
+            })
+
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        print("(no services recorded — agents must call `findings service-set` to populate)")
+        return
+
+    # Pretty table
+    cols = [
+        ("host", 30),
+        ("port", 9),
+        ("service", 8),
+        ("product", 22),
+        ("version", 14),
+    ]
+    if args.findings:
+        cols.append(("findings", 9))
+
+    def fmt_row(values):
+        return " ".join(
+            f"{str(values[i])[:cols[i][1]]:<{cols[i][1]}}"
+            for i in range(len(cols))
+        )
+
+    print(fmt_row([c[0] for c in cols]))
+    print(fmt_row(["-" * (c[1] - 1) for c in cols]))
+    for r in rows:
+        vals = [r["host"], r["port"], r["service"], r["product"], r["version"]]
+        if args.findings:
+            vals.append(r["findings"])
+        print(fmt_row(vals))
+    print(fmt_row(["-" * (c[1] - 1) for c in cols]))
+    n_hosts = len(set(r["host"] for r in rows))
+    print(f"total: {len(rows)} service entries across {n_hosts} hosts")
+
+
 def cmd_export_md(args):
     d = engagement_dir() / "findings" / "hosts"
     sev_rank = {s: i for i, s in enumerate(reversed(SEVERITIES))}
@@ -291,6 +347,12 @@ def main():
 
     s = sub.add_parser("list")
     s.set_defaults(func=cmd_list)
+
+    s = sub.add_parser("services", help="cross-host service inventory")
+    s.add_argument("--json", action="store_true", help="JSON output instead of table")
+    s.add_argument("--findings", action="store_true",
+                   help="include 'findings' count column")
+    s.set_defaults(func=cmd_services)
 
     s = sub.add_parser("export-md")
     s.set_defaults(func=cmd_export_md)

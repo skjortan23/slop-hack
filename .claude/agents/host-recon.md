@@ -56,7 +56,23 @@ A single host: hostname, IP, or URL.
    ```bash
    nmap -sV -sC -Pn -p <ports> <ip>
    ```
-   For each port, `findings service-set <host> <port>/tcp --service <s> --product <p> --version <v>`.
+   For **every** port (open, with or without product detection), call
+   `findings service-set <host> <port>/<proto>` with whatever metadata you have:
+   ```bash
+   findings service-set <host> 443/tcp --service https --product nginx --version 1.24.0
+   findings service-set <host> 22/tcp  --service ssh   --product OpenSSH --version 8.9
+   findings service-set <host> 53/udp  --service dns   --product BIND
+   ```
+   This is **mandatory** — without `service-set`, the per-host YAML has
+   findings but no inventory of what's running. `findings services` (the
+   cross-host inventory query) will be empty.
+
+   For HTTP services where you only have httpx fingerprint, still record
+   what you got — at minimum service+product:
+   ```bash
+   findings service-set <host> 443/tcp --service https --product cloudflare
+   findings service-set <host> 443/tcp --service https --product apache --version 2.4.58
+   ```
 
 7. **Per-port deep enum — dispatch service-enum for each open port**:
    ```bash
