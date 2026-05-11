@@ -112,6 +112,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/quickscan && chmod +x /usr/local/bin/quickscan \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/origin-trace/origin-trace.py "$@"\n' \
         > /usr/local/bin/origin-trace && chmod +x /usr/local/bin/origin-trace \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/webapp-confirm/webapp-confirm.py "$@"\n' \
+        > /usr/local/bin/webapp-confirm && chmod +x /usr/local/bin/webapp-confirm \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------
