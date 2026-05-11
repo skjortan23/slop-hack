@@ -157,16 +157,22 @@ def httpx_enrich(http_hits):
             scheme = "https" if h["tls"] or h["port"] in (443, 8443, 4443) else "http"
             f.write(f"{scheme}://{h['host']}:{h['port']}\n")
 
-    args = [
-        "httpx",
-        "-l", str(in_file),
-        "-title", "-tech-detect", "-server", "-status-code",
-        "-no-color", "-silent", "-json",
-        "-timeout", "15",
-        "-o", str(out_file),
-    ]
     print(f"[httpx] {len(http_hits)} HTTP endpoints", file=sys.stderr)
-    rc, _, _ = run(args, timeout=300)
+    # httpx 1.9.0:
+    # - `-o file -json` writes nothing to file (silent bug)
+    # - subprocess.run(capture_output=True) gets 0 bytes (TTY detection?)
+    # Workaround: invoke via shell with redirect — preserves the buffering
+    # behavior httpx expects when its stdout is captured by a file.
+    cmd = (
+        f"httpx -l {in_file} "
+        f"-title -tech-detect -server -status-code "
+        f"-no-color -silent -json "
+        f"-timeout 15 > {out_file}"
+    )
+    try:
+        subprocess.run(cmd, shell=True, timeout=300, check=False)
+    except Exception as e:
+        print(f"  httpx error: {e}", file=sys.stderr)
 
     by_target = {}
     if out_file.exists():
