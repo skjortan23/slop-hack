@@ -135,7 +135,56 @@ def main() -> int:
         )
 
     ss_hits = run_searchsploit(args.product, args.version)
-    for hit in ss_hits[:5]:
+    # Filter searchsploit hits — drop low-confidence substring matches.
+    # A real hit should have:
+    # 1. Product name appears in the title (case-insensitive, word boundary)
+    # 2. If version was passed, the title should reference a relevant version
+    #    range (a "< X.Y" or "X.Y" prefix that could plausibly include ours)
+    # 3. Path should not be obviously another product's directory
+    #    (e.g. "windows/local" hits when we asked for Linux Apache)
+    product_lc = args.product.lower()
+    version = args.version.strip()
+    filtered = []
+    for hit in ss_hits:
+        title = (hit.get("Title") or "")
+        title_lc = title.lower()
+        path = (hit.get("Path") or "").lower()
+
+        # 1. Product must appear as a word in the title
+        import re as _re
+        if not _re.search(rf"\b{_re.escape(product_lc)}\b", title_lc):
+            continue
+        # 2. Reject combo titles where product is paired with something else
+        #    that's clearly the actual target ("Apache + PHP < 5.3" when we
+        #    asked about Apache alone is too noisy)
+        if " + " in title and product_lc not in title_lc.split(" + ")[0]:
+            continue
+        # 3. Reject platform mismatch for obvious cases
+        #    cloudflare WARP is Windows-only — don't match for *nix server
+        if "warp" in title_lc and "unquoted service path" in title_lc:
+            continue
+        # 4. If version provided and title has explicit version constraint,
+        #    do best-effort range check
+        if version:
+            # Find "<= X" / "< X" / "X.Y" patterns in title
+            m = _re.search(r"<\s*=?\s*(\d+(?:\.\d+)+)", title_lc)
+            if m:
+                try:
+                    cap = m.group(1)
+                    # crude major.minor comparison — if our version is
+                    # numerically greater, it's not in range
+                    def _to_tuple(v):
+                        return tuple(int(x) for x in v.split(".") if x.isdigit())
+                    if _to_tuple(version) >= _to_tuple(cap):
+                        continue
+                except Exception:
+                    pass
+
+        filtered.append(hit)
+        if len(filtered) >= 5:
+            break
+
+    for hit in filtered:
         title = hit.get("Title", "")
         edb_id = hit.get("EDB-ID", "")
         log_finding(

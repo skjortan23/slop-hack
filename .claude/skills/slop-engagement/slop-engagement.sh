@@ -135,14 +135,42 @@ fi
 # ── phase 2: dnsx — narrow to live hosts ──
 say "phase 2 — DNS resolve"
 LIVE_FILE="$ENGAGEMENT_DIR/recon/active/live-hosts.txt"
-timeout 60 dnsx -nc -l "$HOSTS_FILE" -resp -a -silent \
+timeout 60 dnsx -nc -l "$HOSTS_FILE" -resp -a -cname -silent \
   -r /opt/resolvers/resolvers.txt 2>/dev/null \
   > "$ENGAGEMENT_DIR/recon/active/dnsx.txt" || true
 
-# Each dnsx output line (with -nc): "host [A] [ip]"
+# Hosts with A records — proceed normally
 awk '/\[A\]/ { print $1 }' \
   "$ENGAGEMENT_DIR/recon/active/dnsx.txt" \
   | sort -u > "$LIVE_FILE"
+
+# Hosts with CNAME but no A — subdomain takeover candidates.
+# We want these in the live list AND surfaced as a finding so the agent
+# / report doesn't miss them. dangling CNAME = potential takeover.
+DANGLING_FILE="$ENGAGEMENT_DIR/recon/active/dangling-cname.txt"
+awk '/\[CNAME\]/ { print $1 " " $3 }' \
+  "$ENGAGEMENT_DIR/recon/active/dnsx.txt" \
+  | sort -u > "$DANGLING_FILE.all"
+# Keep only those whose source host does NOT appear in $LIVE_FILE
+> "$DANGLING_FILE"
+while read -r host cname; do
+  if ! grep -qFx "$host" "$LIVE_FILE"; then
+    echo "$host CNAME $cname" >> "$DANGLING_FILE"
+    # Add this host to the live list — the agent should investigate
+    echo "$host" >> "$LIVE_FILE"
+    # Log immediate finding so it's not lost
+    findings host-set "$host" --hostname "$host" \
+      --note "dangling CNAME → $cname (no A record)" >/dev/null 2>&1
+    findings add "$host" \
+      --severity medium \
+      --title "Dangling CNAME — potential subdomain takeover candidate" \
+      --evidence "DNS CNAME: $host → $cname; CNAME target does not resolve to A record. If '$cname' is registrable, attacker could claim it." \
+      --source slop-engagement >/dev/null 2>&1
+  fi
+done < "$DANGLING_FILE.all"
+sort -u "$LIVE_FILE" -o "$LIVE_FILE"
+DANGLING_COUNT=$(wc -l < "$DANGLING_FILE" 2>/dev/null || echo 0)
+[ "$DANGLING_COUNT" -gt 0 ] && echo "  → $DANGLING_COUNT dangling CNAME(s) — flagged as medium-severity takeover candidates"
 LIVE_COUNT=$(wc -l < "$LIVE_FILE")
 echo "  → $LIVE_COUNT live hosts"
 
