@@ -68,6 +68,29 @@ if ! scope-check "$ROOT" >/dev/null 2>&1; then
 fi
 echo "  in scope"
 
+# ── preflight: net-health ──
+say "preflight — net-health"
+NET_STATE=$(net-health --json 2>/dev/null | jq -r '.state' 2>/dev/null || echo "unknown")
+echo "  state: $NET_STATE"
+case "$NET_STATE" in
+  egress-broken)
+    echo "ABORT: net-health reports egress-broken — check network before running engagement" >&2
+    exit 2
+    ;;
+  port-scan-suppressed)
+    echo "  ⚠ port-scan suppressed — naabu will return 0; HTTP-only enumeration will still work"
+    echo "  ⚠ findings tagged with port_scan_suppressed=true"
+    PORT_SCAN_SUPPRESSED=1
+    ;;
+  partial-degraded|unknown)
+    echo "  ⚠ network partially degraded — proceeding but expect reduced port-scan coverage"
+    PORT_SCAN_SUPPRESSED=0
+    ;;
+  healthy)
+    PORT_SCAN_SUPPRESSED=0
+    ;;
+esac
+
 # ── phase 1: passive recon (skip if --single-host) ──
 HOSTS_FILE="$ENGAGEMENT_DIR/recon/passive/subdomains.txt"
 if [ "$SINGLE_HOST" -eq 1 ]; then

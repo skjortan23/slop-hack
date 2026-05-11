@@ -116,6 +116,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/webapp-confirm && chmod +x /usr/local/bin/webapp-confirm \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/endpoint-authcheck/endpoint-authcheck.py "$@"\n' \
         > /usr/local/bin/endpoint-authcheck && chmod +x /usr/local/bin/endpoint-authcheck \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/net-health/net-health.py "$@"\n' \
+        > /usr/local/bin/net-health && chmod +x /usr/local/bin/net-health \
  && cp /root/.claude/skills/slop-engagement/slop-engagement.sh /usr/local/bin/slop-engagement \
  && chmod +x /usr/local/bin/slop-engagement \
  && cp /root/.claude/skills/slop-engage/slop-engage.sh /usr/local/bin/slop-engage \
