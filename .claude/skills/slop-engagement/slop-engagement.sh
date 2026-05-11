@@ -112,12 +112,12 @@ fi
 # ── phase 2: dnsx — narrow to live hosts ──
 say "phase 2 — DNS resolve"
 LIVE_FILE="$ENGAGEMENT_DIR/recon/active/live-hosts.txt"
-timeout 60 dnsx -l "$HOSTS_FILE" -resp -a -silent \
+timeout 60 dnsx -nc -l "$HOSTS_FILE" -resp -a -silent \
   -r /opt/resolvers/resolvers.txt 2>/dev/null \
   > "$ENGAGEMENT_DIR/recon/active/dnsx.txt" || true
 
-# Each dnsx output line: "host [A] [ip]"
-awk '/\[A\]/ {gsub(/[\[\]]/, "", $1); print $1}' \
+# Each dnsx output line (with -nc): "host [A] [ip]"
+awk '/\[A\]/ { print $1 }' \
   "$ENGAGEMENT_DIR/recon/active/dnsx.txt" \
   | sort -u > "$LIVE_FILE"
 LIVE_COUNT=$(wc -l < "$LIVE_FILE")
