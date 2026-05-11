@@ -118,6 +118,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/endpoint-authcheck && chmod +x /usr/local/bin/endpoint-authcheck \
  && cp /root/.claude/skills/slop-engagement/slop-engagement.sh /usr/local/bin/slop-engagement \
  && chmod +x /usr/local/bin/slop-engagement \
+ && cp /root/.claude/skills/slop-engage/slop-engage.sh /usr/local/bin/slop-engage \
+ && chmod +x /usr/local/bin/slop-engage \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------
