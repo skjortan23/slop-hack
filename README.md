@@ -21,68 +21,53 @@ external (local) LLM via vLLM + an Anthropic-format translator.
 Modern vLLM exposes `/v1/messages` natively, so Claude Code talks to it
 without a translator in between.
 
-## One-time setup
-
-1. **Start vLLM on the host** with the model you want to drive the agent:
-
-   ```bash
-   vllm serve <model-id> --port 8000
-   ```
-
-   Note the model id you served — you'll pass it as `ANTHROPIC_MODEL`.
-
-2. **Build the image.**
-
-   ```bash
-   colima start --cpu 4 --memory 8 --disk 40
-   docker compose build
-   ```
-
-3. **Define an engagement scope.** Edit `scope/scope.yaml`:
-
-   ```yaml
-   engagement_id: ENG-2026-001
-   authorized_until: 2026-06-01
-   in_scope:
-     - "*.acme.com"
-     - "203.0.113.0/24"
-   out_of_scope:
-     - "vpn.acme.com"
-   ```
-
-4. **(Optional) Provide API keys** for richer passive recon. Put them in
-   `pd-config/subfinder/provider-config.yaml` (see ProjectDiscovery docs) and
-   set env vars in the shell before running compose:
-
-   ```bash
-   export SHODAN_API_KEY=...
-   export CHAOS_KEY=...
-   export GITHUB_TOKEN=...
-   ```
-
-## Run
+## Quick start
 
 ```bash
-ENGAGEMENT_ID=ENG-2026-001 \
-VLLM_PORT=8000 \
-ANTHROPIC_MODEL=<the-model-id-vllm-served> \
-  docker compose run --rm slop-hack
+# 1. one-time: start vLLM on the host, build the container
+vllm serve <model-id> --port 8000
+colima start --cpu 4 --memory 8 --disk 40
+docker compose build
+
+# 2. for every engagement: just point slop at a target
+./slop acme.com                 # opens claude shell, scope + engagement prepped
+./slop acme.com --auto          # runs the full chain end-to-end, no shell
 ```
 
-Inside the container:
+The `slop` script:
+- adds `acme.com` (and `*.acme.com` for domains) to `scope/scope.yaml`
+- picks an `ENGAGEMENT_ID` from the target + date
+- defaults `ANTHROPIC_MODEL=qwen36` (override via env)
+- drops you into the container with `slop-engage <target>` ready to run
 
-```bash
-claude          # starts Claude Code against the local translator
-```
+Once inside the container, drive the agent in natural language:
 
-Then drive the agent in natural language:
-
-> Do passive recon on acme.com.
-> Now find live web hosts and open ports.
-> Generate the engagement report.
+> do passive recon on acme.com
+> now find live web hosts and open ports
+> find and confirm any CVEs
 
 The agent picks up skills from `/root/.claude/skills/` automatically based on
 their `description:` frontmatter.
+
+## Manual run (legacy)
+
+```bash
+ENGAGEMENT_ID=ENG-2026-001 ANTHROPIC_MODEL=qwen36 \
+  docker compose run --rm slop-hack
+```
+
+then inside: `claude` or `slop-engage <target>`.
+
+## (Optional) API keys for richer passive recon
+
+Put them in `pd-config/subfinder/provider-config.yaml` (see ProjectDiscovery
+docs) and export before running:
+
+```bash
+export SHODAN_API_KEY=...
+export CHAOS_KEY=...
+export GITHUB_TOKEN=...
+```
 
 ## Skills
 

@@ -6,7 +6,11 @@
 #   - pipx for Python tools
 #   - npm -g for Claude Code CLI
 
-FROM kalilinux/kali-rolling
+# Pinned digest — bump intentionally when you want a fresh apt baseline.
+# Without pinning, Docker Desktop's image-store cleanup + Kali rolling's
+# daily digest changes invalidate the apt-install layer on every rebuild
+# (~30min apt-download). Snapshot from 2026-05-12.
+FROM kalilinux/kali-rolling@sha256:3a8ac05067199c5fd496321b13d43b6cddcfe314cf575dd8ef063f7e430683b0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     GOPATH=/root/go \
@@ -72,7 +76,10 @@ RUN mkdir -p /opt/wordlists /opt/resolvers \
     && curl -fsSL https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt \
        -o /opt/resolvers/resolvers.txt
 
-RUN nuclei -update-templates -silent || true
+# nuclei v3 stores templates at /root/.local/nuclei-templates by default.
+# Symlink the legacy path for skills/docs that still refer to /root/nuclei-templates.
+RUN nuclei -update-templates -silent || true \
+ && ln -sfn /root/.local/nuclei-templates /root/nuclei-templates
 
 # --- mitmproxy CA: pre-generate + install in system trust ----------------
 # Without this, anything inside the container that talks HTTPS through
@@ -108,8 +115,8 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
         > /usr/local/bin/openapi-import && chmod +x /usr/local/bin/openapi-import \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/vuln-search/vuln-check.py "$@"\n' \
         > /usr/local/bin/vuln-check && chmod +x /usr/local/bin/vuln-check \
- && printf '#!/bin/sh\nexec python3 /root/.claude/skills/quickscan/quickscan.py "$@"\n' \
-        > /usr/local/bin/quickscan && chmod +x /usr/local/bin/quickscan \
+ && cp /root/.claude/skills/quickscan/quickscan.sh /usr/local/bin/quickscan \
+ && chmod +x /usr/local/bin/quickscan \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/origin-trace/origin-trace.py "$@"\n' \
         > /usr/local/bin/origin-trace && chmod +x /usr/local/bin/origin-trace \
  && printf '#!/bin/sh\nexec python3 /root/.claude/skills/webapp-confirm/webapp-confirm.py "$@"\n' \
@@ -122,6 +129,12 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
  && chmod +x /usr/local/bin/slop-engagement \
  && cp /root/.claude/skills/slop-engage/slop-engage.sh /usr/local/bin/slop-engage \
  && chmod +x /usr/local/bin/slop-engage \
+ && cp /root/.claude/skills/slop-status/slop-status.sh /usr/local/bin/slop-status \
+ && chmod +x /usr/local/bin/slop-status \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/slop-listen/slop-listen.py "$@"\n' \
+        > /usr/local/bin/slop-listen && chmod +x /usr/local/bin/slop-listen \
+ && cp /root/.claude/skills/shell-payloads/shell-payloads.sh /usr/local/bin/shell-payloads \
+ && chmod +x /usr/local/bin/shell-payloads \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------

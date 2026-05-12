@@ -129,20 +129,59 @@ else
     | tr '[:upper:]' '[:lower:]' \
     | sort -u > "$HOSTS_FILE"
 
-  echo "  → $(wc -l < "$HOSTS_FILE") unique subdomains discovered"
+  echo "  → $(wc -l < "$HOSTS_FILE") unique subdomains from CT/passive"
+
+  # Brute-force prefix enumeration removed — subfinder + amass + crt.sh
+  # already cover anything that's been issued a cert or seen by passive DNS.
+  # Brute against a wildcard-DNS domain (Cloudflare, registrar parking)
+  # produces all false-positives (every prefix "resolves"). If passive
+  # missed a host, the agent can probe it manually.
+
+  echo "  → $(wc -l < "$HOSTS_FILE") unique subdomains total"
 fi
 
-# ── phase 2: dnsx — narrow to live hosts ──
-say "phase 2 — DNS resolve"
+# ── phase 2: dnsx — annotate with DNS, but don't gate on it ──
+# Earlier architecture filtered hosts by dnsx -a result. dnsx is brittle
+# (rate-limit, partial failures, resolver flakiness). We saw 7/73 hosts
+# silently drop here. Instead: keep ALL hosts from passive-recon as
+# candidates, let httpx in phase 3 decide what's actually live.
+say "phase 2 — DNS annotate (non-gating)"
 LIVE_FILE="$ENGAGEMENT_DIR/recon/active/live-hosts.txt"
-timeout 60 dnsx -nc -l "$HOSTS_FILE" -resp -a -silent \
+timeout 120 dnsx -nc -retry 3 -l "$HOSTS_FILE" -resp -a -cname -silent \
   -r /opt/resolvers/resolvers.txt 2>/dev/null \
   > "$ENGAGEMENT_DIR/recon/active/dnsx.txt" || true
 
-# Each dnsx output line (with -nc): "host [A] [ip]"
-awk '/\[A\]/ { print $1 }' \
+# All passive-recon hosts go into live-hosts — even if dnsx didn't resolve
+# them this run (httpx is the actual liveness check downstream).
+cp "$HOSTS_FILE" "$LIVE_FILE"
+
+# Hosts with CNAME but no A — subdomain takeover candidates.
+# We want these in the live list AND surfaced as a finding so the agent
+# / report doesn't miss them. dangling CNAME = potential takeover.
+DANGLING_FILE="$ENGAGEMENT_DIR/recon/active/dangling-cname.txt"
+awk '/\[CNAME\]/ { print $1 " " $3 }' \
   "$ENGAGEMENT_DIR/recon/active/dnsx.txt" \
-  | sort -u > "$LIVE_FILE"
+  | sort -u > "$DANGLING_FILE.all"
+# Keep only those whose source host does NOT appear in $LIVE_FILE
+> "$DANGLING_FILE"
+while read -r host cname; do
+  if ! grep -qFx "$host" "$LIVE_FILE"; then
+    echo "$host CNAME $cname" >> "$DANGLING_FILE"
+    # Add this host to the live list — the agent should investigate
+    echo "$host" >> "$LIVE_FILE"
+    # Log immediate finding so it's not lost
+    findings host-set "$host" --hostname "$host" \
+      --note "dangling CNAME → $cname (no A record)" >/dev/null 2>&1
+    findings add "$host" \
+      --severity medium \
+      --title "Dangling CNAME — potential subdomain takeover candidate" \
+      --evidence "DNS CNAME: $host → $cname; CNAME target does not resolve to A record. If '$cname' is registrable, attacker could claim it." \
+      --source slop-engagement >/dev/null 2>&1
+  fi
+done < "$DANGLING_FILE.all"
+sort -u "$LIVE_FILE" -o "$LIVE_FILE"
+DANGLING_COUNT=$(wc -l < "$DANGLING_FILE" 2>/dev/null || echo 0)
+[ "$DANGLING_COUNT" -gt 0 ] && echo "  → $DANGLING_COUNT dangling CNAME(s) — flagged as medium-severity takeover candidates"
 LIVE_COUNT=$(wc -l < "$LIVE_FILE")
 echo "  → $LIVE_COUNT live hosts"
 
@@ -156,71 +195,119 @@ while read -r h; do
   findings host-set "$h" --hostname "$h" >/dev/null 2>&1
 done < "$LIVE_FILE"
 
-# ── phase 3: quickscan (sweep all live hosts, populate service inventory) ──
-say "phase 3 — quickscan (port + service inventory)"
+# ── phase 3: httpx DIRECTLY on every live host (not gated by naabu) ──
+# This is the critical change vs prior architecture: even when naabu can't
+# get through (Cloudflare drops SYN, WAF filters, etc.), we ALWAYS attempt
+# HTTP fingerprint on every live host. That guarantees the webapp pipeline
+# in phase 4 has something to work with.
+say "phase 3 — HTTP probing (every live host, 80+443)"
+HTTPX_OUT="$ENGAGEMENT_DIR/recon/active/httpx-direct.json"
+# Keep the URL list lean: just 80 and 443. Extra ports (8080/8443/8000)
+# add noise on CDN-fronted targets (Cloudflare doesn't proxy them by
+# default) and cause httpx to fan out to many connections, tripping
+# rate limits and dropping responses inconsistently.
+# After this initial probe, the agent can probe specific extra ports
+# per-host if the surface looks interesting.
+{
+  while read -r h; do
+    echo "https://$h"
+    echo "http://$h"
+  done < "$LIVE_FILE"
+} > "$ENGAGEMENT_DIR/recon/active/httpx-urls.txt"
+
+# Rate-limit aggressively to keep Cloudflare/CDN happy. The chain is
+# bounded by total wall-clock, not single-host speed.
+# -timeout 5, outer 60 — fail fast when 80/443 don't respond (very common
+# on hosts that serve only on nonstandard ports). The full port discovery
+# happens in phase 3b (quickscan).
+# Drop -silent — its stdout buffering hangs when piped to a file with no
+# TTY, same bug pattern quickscan hit.
+timeout 60 httpx -l "$ENGAGEMENT_DIR/recon/active/httpx-urls.txt" \
+  -title -tech-detect -server -status-code -follow-redirects \
+  -no-color -json -timeout 5 \
+  -rate-limit 10 -threads 5 \
+  > "$HTTPX_OUT" 2>/dev/null || true
+
+# Log each HTTP-responsive host as a service in findings
+WEB_HOSTS=$(jq -r '.host' "$HTTPX_OUT" 2>/dev/null | sort -u)
+HTTP_HIT_COUNT=$(jq -r '.host' "$HTTPX_OUT" 2>/dev/null | wc -l | tr -d ' ')
+echo "  → $HTTP_HIT_COUNT HTTP endpoints responsive"
+
+if [ -s "$HTTPX_OUT" ]; then
+  while read -r line; do
+    [ -z "$line" ] && continue
+    host=$(echo "$line" | jq -r '.host')
+    port=$(echo "$line" | jq -r '.port')
+    scheme=$(echo "$line" | jq -r '.scheme')
+    server=$(echo "$line" | jq -r '.webserver // .server // ""')
+    tech=$(echo "$line" | jq -r '.tech // [] | join(",")')
+    title=$(echo "$line" | jq -r '.title // ""')
+    status=$(echo "$line" | jq -r '.status_code')
+    findings host-set "$host" --hostname "$host" >/dev/null 2>&1
+    args=("$host" "${port}/tcp" "--service" "$scheme")
+    [ -n "$server" ] && [ "$server" != "null" ] && args+=("--product" "$server")
+    banner="HTTP $status${title:+ \"$title\"}${tech:+ tech=$tech}"
+    args+=("--banner" "$banner")
+    findings service-set "${args[@]}" >/dev/null 2>&1
+  done < <(jq -c '.' "$HTTPX_OUT")
+fi
+
+# ── phase 3b: quickscan for non-HTTP services (additive, not gating) ──
+say "phase 3b — quickscan (non-HTTP port discovery)"
 QS_PORTS=""
 case "$DEPTH" in
   shallow) QS_PORTS="-p 22,80,443,8080,8443" ;;
   deep)    QS_PORTS="--full" ;;
-  *)       QS_PORTS="" ;;  # use defaults (~80 pentest ports)
+  *)       QS_PORTS="" ;;
 esac
-
 timeout 600 quickscan -l "$LIVE_FILE" $QS_PORTS 2>&1 \
   | grep -vE "(getcwd|^\[naabu\]|^\[httpx\])" \
-  | tail -30 || true
+  | tail -10 || true
 
-# ── phase 4: per-host webapp pipeline ──
-if [ "$DO_WEBAPP" -eq 1 ]; then
+# ── phase 4: webapp pipeline — runs whenever ANY HTTP host responds ──
+if [ "$DO_WEBAPP" -eq 1 ] && [ -n "$WEB_HOSTS" ]; then
   say "phase 4 — webapp pipeline (per HTTP host)"
+  echo "  web hosts (from httpx phase 3): $(echo "$WEB_HOSTS" | wc -l | tr -d ' ')"
 
-  # Collect web hosts from findings inventory
-  WEB_HOSTS=$(findings services --json 2>/dev/null \
-    | jq -r '.[] | select(.service | test("^http")) | .host' \
-    | sort -u)
-
-  if [ -z "$WEB_HOSTS" ]; then
-    echo "  no web hosts in inventory — skipping webapp pipeline"
-  else
-    echo "  web hosts: $(echo "$WEB_HOSTS" | wc -l | tr -d ' ')"
-
-    # Pull OpenAPI per host where available; import into endpoints.jsonl
-    while read -r host; do
-      [ -z "$host" ] && continue
-      spec="$ENGAGEMENT_DIR/webapp/${host//\//_}-openapi.json"
-      echo "  · curl https://$host/openapi.json"
-      timeout 15 curl -sk -m 12 "https://$host/openapi.json" -o "$spec" 2>/dev/null
-      if [ -s "$spec" ] && head -c 1 "$spec" | grep -q '{'; then
-        echo "    ✓ got $(wc -c <"$spec") bytes — importing"
-        openapi-import "$spec" --base-url "https://$host" 2>&1 | tail -3
-      else
-        rm -f "$spec"
-      fi
-    done <<< "$WEB_HOSTS"
-
-    # If we have any endpoints, run authcheck + fuzz + confirm
-    if [ -s "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" ]; then
-      echo
-      say "phase 4a — endpoint-authcheck"
-      timeout 300 endpoint-authcheck --rate-limit 0.3 2>&1 \
-        | tail -25 || true
-
-      echo
-      say "phase 4b — webapp-fuzz (nuclei DAST)"
-      # Build URL list from endpoints
-      URLS="$ENGAGEMENT_DIR/webapp/fuzz-urls.txt"
-      jq -r '.url_template' "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" \
-        | sed 's/{[^}]*}/1/g' | sort -u > "$URLS"
-      if [ -s "$URLS" ]; then
-        timeout 600 nuclei -l "$URLS" -dast \
-          -severity low,medium,high,critical \
-          -rate-limit 50 \
-          -json-export "$ENGAGEMENT_DIR/webapp/dast.json" \
-          -silent 2>&1 | tail -5 || true
-        DAST_HITS=$(wc -l < "$ENGAGEMENT_DIR/webapp/dast.json" 2>/dev/null || echo 0)
-        echo "  → $DAST_HITS DAST hits"
-      fi
+  # Pull OpenAPI per host where available; import into endpoints.jsonl
+  while read -r host; do
+    [ -z "$host" ] && continue
+    spec="$ENGAGEMENT_DIR/webapp/${host//\//_}-openapi.json"
+    echo "  · curl https://$host/openapi.json"
+    timeout 15 curl -sk -m 12 "https://$host/openapi.json" -o "$spec" 2>/dev/null
+    if [ -s "$spec" ] && head -c 1 "$spec" | grep -q '{'; then
+      echo "    ✓ got $(wc -c <"$spec") bytes — importing"
+      openapi-import "$spec" --base-url "https://$host" 2>&1 | tail -3
+    else
+      rm -f "$spec"
     fi
+  done <<< "$WEB_HOSTS"
+
+  # If we have any endpoints, run authcheck (MANDATORY — not optional)
+  if [ -s "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" ]; then
+    echo
+    say "phase 4a — endpoint-authcheck (every endpoint without auth)"
+    timeout 300 endpoint-authcheck --rate-limit 0.3 2>&1 | tail -30 || true
+
+    echo
+    say "phase 4b — webapp-fuzz (nuclei DAST)"
+    URLS="$ENGAGEMENT_DIR/webapp/fuzz-urls.txt"
+    jq -r '.url_template' "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" \
+      | sed 's/{[^}]*}/1/g' | sort -u > "$URLS"
+    if [ -s "$URLS" ]; then
+      timeout 600 nuclei -l "$URLS" -dast \
+        -severity low,medium,high,critical \
+        -rate-limit 50 \
+        -json-export "$ENGAGEMENT_DIR/webapp/dast.json" \
+        -silent 2>&1 | tail -5 || true
+      DAST_HITS=$(wc -l < "$ENGAGEMENT_DIR/webapp/dast.json" 2>/dev/null || echo 0)
+      echo "  → $DAST_HITS DAST hits"
+    fi
+  else
+    echo "  no openapi.json found on any web host — skipping authcheck/fuzz"
   fi
+elif [ "$DO_WEBAPP" -eq 1 ]; then
+  say "phase 4 — webapp pipeline skipped (no HTTP-responsive hosts)"
 fi
 
 # ── phase 5: vuln-check per detected service version ──
