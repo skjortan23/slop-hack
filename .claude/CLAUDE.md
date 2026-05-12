@@ -158,6 +158,45 @@ evidence column for a level, downgrade.
    finding should NOT create another finding with a slightly different
    title. Run `findings show <host>` first; if the finding exists, skip.
 
+## Rule of confirmation — every candidate has an exit obligation
+
+A "candidate" finding (something that LOOKS exploitable but you haven't
+proven yet) is **not a stopping point**. Before logging it at low/medium
+and moving on, you owe one of two outcomes:
+
+1. **Confirmed exploitable** → escalate to high/critical with the actual
+   payload, response, and impact in `--evidence`. Use the per-class
+   procedures below.
+2. **Confirmed dead-end** → log at low/info with proof of why it doesn't
+   chain (e.g. "tested with X, got Y because Z").
+
+Logging a candidate as `low` and moving on with no exploitation attempt
+is a **failure mode**. The user paid for hours of compute; "endpoint
+looks suspicious" is not delivery.
+
+### Per-class confirmation procedures
+
+| Candidate type | Confirmation method | Escalate to |
+|---|---|---|
+| SSRF (endpoint accepts URL) | Start `interactsh-client` → POST the issued URL → wait 30s → check for callback hit | high (callback received) |
+| Blind SQLi | Compare response time / error message for `' OR SLEEP(5)--` vs benign payload | high (timing diff > 4s) |
+| IDOR (numeric ID in path) | Request `/users/1`, `/users/2`, … unauth — count distinct response bodies | high (>1 distinct body returned, ≠ uniform 401/403) |
+| Auth bypass (protected route) | Make unauth request → confirm response body contains application data, not a login redirect / error envelope | high (real PII/data returned) |
+| Source disclosure (.git/.env) | `curl` the file, verify response is the real file (not 404 HTML), grep for secrets | critical (key/secret) or high (path is private) |
+| Dangling CNAME | `dig <cname-target>`, `whois <apex>`, check registrar status — confirm registrable | high (registrable) |
+| Method swap (PUT/DELETE accepted) | Send the verb with a benign payload, confirm state actually changed (re-GET shows new state) | high (state changed) |
+| CVE template hit | Read the template to see what it actually matched on, run `vuln-check` and verify the version really falls in the affected range | medium/high (version-confirmed) |
+
+### Required tools for confirmation
+- `interactsh-client` — OOB callbacks (start it, copy the issued URL, use as canary)
+- `curl -sk -i` — show response headers + body to verify
+- `whois` — TLD registrability
+- `dig +short` — verify CNAME chain ends in NXDOMAIN
+
+If you can't confirm because of rate-limiting / WAF / OOB infra issue,
+log that explicitly as part of the candidate's evidence — don't silently
+downgrade.
+
 ## When unsure if it's a finding
 
 Two tests:
