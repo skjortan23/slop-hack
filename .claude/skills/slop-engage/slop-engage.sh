@@ -79,7 +79,17 @@ FCOUNT=$(wc -l < "$ENGAGEMENT_DIR/findings/findings.jsonl" 2>/dev/null || echo 0
 HCOUNT=$(ls "$ENGAGEMENT_DIR/findings/hosts/" 2>/dev/null | wc -l | tr -d ' ')
 ECOUNT=$(wc -l < "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" 2>/dev/null || echo 0)
 
-STATE_HEADER="ENGAGEMENT STATE (populated by deterministic chain):
+STATE_HEADER="CONTRACT — read this first, every turn:
+You have $MAX_TURNS turns. After EACH probe, log the result with 'findings add'
+BEFORE moving to the next candidate. Examples:
+  Confirmed exploit  → findings add <host> --severity high --title '<class>: <evidence-one-liner>' \\
+                                            --evidence '<payload> -> <response>' --source <class>-confirmed
+  Dead-end           → findings add <host> --severity info --title '<class> dead-end at <path>' \\
+                                            --evidence 'tested with X, got Y because Z' --source <class>-deadend
+Untested = useless. NEVER silently skip a candidate.
+Reserve the last 5 turns to write \$ENGAGEMENT_DIR/specialists/<name>-report.md.
+
+ENGAGEMENT STATE (populated by deterministic chain):
 - hosts enumerated: $HCOUNT
 - findings logged so far: $FCOUNT
 - endpoints (from openapi/proxy): $ECOUNT
@@ -88,20 +98,16 @@ STATE_HEADER="ENGAGEMENT STATE (populated by deterministic chain):
 The chain is a STARTING POINT, not a finish line. State is already populated.
 DO NOT re-run passive-recon, dnsx, quickscan, openapi-import. Start by reading:
   findings list
-  findings services --findings
   jq -r '.severity' \$ENGAGEMENT_DIR/findings/findings.jsonl | sort | uniq -c
 
 The chain typically misses: JS bundle analysis, Wayback-discovered routes,
 hidden subdomains the agent can intuit from app naming patterns, exploit
 confirmation. Spend your turns there.
 
-CRITICAL — RULE OF CONFIRMATION:
-Every candidate finding has an exit obligation. Before logging at low/medium
-and moving on, attempt ONE round of exploitation. You either:
-  (a) confirm it works → escalate to high/critical with payload + response
-  (b) confirm it's a dead-end → log low with proof of why
-Logging 'looks suspicious' as low and moving on is a FAILURE MODE. See
-\$ENGAGEMENT_DIR/../CLAUDE.md 'Rule of confirmation' for per-class procedures.
+RULE OF CONFIRMATION:
+Every candidate has an exit obligation: (a) confirm exploit → high/critical
+with payload+response, or (b) confirm dead-end → log info with proof of why.
+Logging 'looks suspicious' as low and moving on is a FAILURE MODE.
 
 Tools available for confirmation:
   interactsh-client -v       # OOB callbacks for blind SSRF/RCE
@@ -361,56 +367,49 @@ JSON: {confirmed_secrets, retrieved_files, false_positives_ruled_out}"
 
   run_agent "cve-correlation" "$SPECIALISTS_DIR/cve-correlation.jsonl" "$STATE_HEADER
 
-SPECIALIST GOAL: PROVE the running version falls in CVE affected ranges
-AND demonstrate the CVE's preconditions on the live target.
+HARD RULE — READ FIRST:
+You MUST NOT run any exploit commands yourself. Your ONLY job is to:
+  (a) call vuln-check per service to find CVE candidates
+  (b) emit Task tool calls to dispatch exploit-agent subagents — ONE per CVE
+The exploit-agent subagent will read the template + craft + run the exploit.
+If you run curl/nuclei/python exploit payloads yourself in Bash, you are
+breaking this contract. Do not.
 
 Process:
 
-1. INVENTORY: findings services --json
-   For each (host, port, product, version) where version != null:
-       vuln-check <host> <port> <product> <version>
+STEP 1 — SCAN for CVE candidates:
+  findings services --json
+  # For each service entry with product AND version, run:
+  vuln-check <host> <port> <product> <version>
 
-2. NUCLEI HIT VERIFICATION (per hit logged with --source nuclei-cves):
-   For each CVE finding the chain added:
-   - Read the template: find /root/nuclei-templates -name '<cve-id>.yaml'
-   - Look at the 'matcher' block. What does it actually require?
-     - Just a banner string match → low confidence, KEEP at info unless
-       you can re-run with the exploit payload and observe impact.
-     - Banner + payload that returns specific response → re-run with
-       -debug to see request/response, confirm not a false match.
-   - Look at the 'classification.cve-id' affected version range.
-     - Parse: example 'affected: < 2.4.49'
-     - Our running version is X. Is X actually < 2.4.49? Use sort -V or
-       crude major.minor.patch tuple comparison.
-     - In range AND exploit path returns expected response → medium/high
-     - Out of range or only banner-matched → DOWNGRADE to info with
-       'nuclei template matched on banner only; running version <X> not
-       in affected range <Y>' as evidence.
+STEP 2 — LIST candidates from the new findings:
+  jq -c 'select(.source | startswith(\"nuclei-cve-tier\")) | {host, port, cve}' \
+    \$ENGAGEMENT_DIR/findings/findings.jsonl
 
-3. SEARCHSPLOIT HIT VERIFICATION:
-   For each searchsploit finding the chain added:
-   - The chain's vuln-check filter is conservative but still produces noise
-   - Read the exploit: searchsploit -x <EDB-ID> | head -100
-   - Does the exploit's required setup match the target? (OS, web server,
-     PHP version, plugin presence, etc.)
-   - Can you trigger the precondition? curl the exploit's marker endpoint
-     to see if the vulnerable component is present.
-   - Confirmed precondition present → medium with 'EDB-<id> precondition
-     verified at <url>'. Precondition absent → DOWNGRADE to info.
+STEP 3 — DISPATCH (THIS IS THE CRITICAL STEP):
+  For EACH (host, port, cve) tuple from step 2, issue a Task tool call.
+  Issue ALL Task calls in a SINGLE assistant message so they run in parallel.
 
-4. PROACTIVE: For any service version not yet checked, do an additional
-   cve-search via 'vulnx' if API key configured, OR 'searchsploit <product>'
-   directly and filter manually.
+  Each Task tool call MUST use this exact shape:
+      Task(
+        subagent_type=\"exploit-agent\",
+        description=\"verify <cve-id> on <host>:<port>\",
+        prompt=\"TARGET: <host>:<port>\\nCVE: <cve-id>\\nGOAL: verify exploitation, capture concrete evidence, return JSON.\"
+      )
 
-Narrative report:
+  Do NOT translate this into a bash command. It is a Task TOOL call, not a
+  shell invocation. The Task tool is in your tool list — use it directly.
+
+STEP 4 — Wait for all Task returns, then write the narrative:
   cat > \$ENGAGEMENT_DIR/specialists/cve-correlation-report.md <<'REPORT_EOF'
-  # CVE correlation specialist — narrative
-  ## Confirmed CVEs (version in range + precondition verified)
-  ## False positives downgraded
-  ## CVE template + version analysis
+  # CVE correlation — narrative
+  ## Exploited (tier2 — exploit-agent confirmed RCE/disclosure)
+  ## Deadend (exploit-agent could not confirm)
   REPORT_EOF
+  # The narrative MUST be based on the actual Task return values, not
+  # invented. Do not fabricate task IDs.
 
-JSON: {confirmed_cves, downgraded_fps, additional_checks}"
+JSON summary on stdout: {candidates_scanned, tasks_dispatched, exploited, deadend}"
 
   echo
   echo "=== 5 specialists running in parallel — waiting for all ==="

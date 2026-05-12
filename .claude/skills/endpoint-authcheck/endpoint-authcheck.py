@@ -127,6 +127,48 @@ def _is_data_json(body: str) -> bool:
     return len(keys) >= 2
 
 
+# Operational config = worker counts, max_tokens, feature-flag-style fields.
+# Per CLAUDE.md anti-inflation rule #2 these are LOW, not HIGH, when leaked
+# unauth. A key is "operational" if it matches one of these substrings.
+_OP_CONFIG_KEY_HINTS = (
+    "worker", "workers_max", "max_token", "max_tokens", "rate_limit",
+    "concurrency", "queue", "pool_size", "thread", "feature", "flag",
+    "enabled", "audit", "review", "fix", "overview", "available",
+)
+
+
+def _is_operational_config(body: str) -> bool:
+    """True if body is a JSON object whose values are all numeric/bool/short-str
+    AND whose keys look like operational config (worker counts, flags, max_*).
+    No secrets, no PII, no internal hostnames → LOW per anti-inflation rule."""
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(obj, dict) or not obj:
+        return False
+    for v in obj.values():
+        if isinstance(v, (int, float, bool)):
+            continue
+        if isinstance(v, str) and len(v) < 40 and "://" not in v and "=" not in v:
+            continue
+        return False  # nested object, long string, URL, conn-string → not op-config
+    keys_lc = " ".join(obj.keys()).lower()
+    return any(hint in keys_lc for hint in _OP_CONFIG_KEY_HINTS)
+
+
+def _is_health_booleans(body: str) -> bool:
+    """True if body is a JSON object whose values are all boolean — pure
+    health/status flags, downgrade to info."""
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(obj, dict) or not obj:
+        return False
+    return all(isinstance(v, bool) for v in obj.values())
+
+
 def expand_path(path: str) -> str:
     """Replace template tokens with placeholder values."""
     return (path

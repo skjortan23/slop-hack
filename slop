@@ -1,0 +1,122 @@
+#!/bin/bash
+# slop — one-shot entry. Pick a target, drop into the container ready to work.
+#
+# Usage:
+#   ./slop <target>                    # prep scope, open claude shell in container
+#   ./slop <target> --auto             # run slop-engage end-to-end, no shell
+#   ./slop <target> --engagement <id>  # use a specific engagement id
+#
+# What it does:
+#   1. Adds <target> (and *.<target> if it looks like a domain) to scope.yaml
+#      additively — existing entries preserved.
+#   2. Picks an ENGAGEMENT_ID from <target> + date.
+#   3. Defaults ANTHROPIC_MODEL=qwen36 (override via env).
+#   4. Either drops you into the container with claude pre-loaded for the
+#      target, or runs slop-engage end-to-end and prints findings on exit.
+
+set -u
+
+cd "$(dirname "$0")"
+
+TARGET=""
+MODE="interactive"   # interactive | auto
+ENG_ID=""
+SINGLE_HOST=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --auto)            MODE="auto" ;;
+    --engagement)      ENG_ID="$2"; shift ;;
+    --single-host)     SINGLE_HOST="--single-host" ;;
+    -h|--help)
+      sed -n '2,15p' "$0"; exit 0 ;;
+    -*)
+      echo "unknown flag: $1" >&2; exit 2 ;;
+    *)
+      if [ -z "$TARGET" ]; then TARGET="$1"
+      else echo "extra arg: $1" >&2; exit 2
+      fi ;;
+  esac
+  shift
+done
+
+if [ -z "$TARGET" ]; then
+  echo "usage: ./slop <target> [--auto] [--engagement ID] [--single-host]" >&2
+  exit 2
+fi
+
+# 1) scope.yaml — additive
+SCOPE=scope/scope.yaml
+mkdir -p scope
+if [ ! -f "$SCOPE" ]; then
+  cat > "$SCOPE" <<EOF
+engagement_id: ENG-default
+authorized_until: 2026-12-31
+in_scope: []
+out_of_scope: []
+EOF
+fi
+
+# Add the target (and wildcard) if not already in_scope
+needs_target=$(grep -qE "^\s*-\s*\"$TARGET\"\s*\$" "$SCOPE" && echo no || echo yes)
+if [ "$needs_target" = "yes" ]; then
+  # Insert under in_scope: — assume single in_scope: block, append lines
+  python3 - "$SCOPE" "$TARGET" <<'PY'
+import sys, yaml, pathlib
+p, target = pathlib.Path(sys.argv[1]), sys.argv[2]
+doc = yaml.safe_load(p.read_text()) or {}
+doc.setdefault("in_scope", [])
+doc.setdefault("out_of_scope", [])
+if target not in doc["in_scope"]:
+    doc["in_scope"].append(target)
+# If target looks like a domain (has a dot, no slash, no colon), also add wildcard
+if "." in target and "/" not in target and ":" not in target and "*" not in target:
+    wild = f"*.{target}"
+    if wild not in doc["in_scope"]:
+        doc["in_scope"].append(wild)
+p.write_text(yaml.safe_dump(doc, default_flow_style=False, sort_keys=False))
+PY
+  echo "scope: added $TARGET (+ wildcard if domain-shaped)"
+fi
+
+# 2) Engagement ID
+if [ -z "$ENG_ID" ]; then
+  ENG_ID="ENG-$(echo "$TARGET" | tr './:' '---' | tr -dc '[:alnum:]-')-$(date +%Y%m%d-%H%M)"
+fi
+echo "engagement: $ENG_ID"
+
+# 3) Model default
+: "${ANTHROPIC_MODEL:=qwen36}"
+: "${VLLM_PORT:=8000}"
+: "${VLLM_HOST:=spark}"
+export ENGAGEMENT_ID="$ENG_ID" ANTHROPIC_MODEL VLLM_PORT VLLM_HOST
+
+# Ensure the work dir exists so the volume mount lands cleanly
+mkdir -p "work/$ENG_ID"
+
+# 4) Run
+if [ "$MODE" = "auto" ]; then
+  echo "=== running slop-engage $TARGET $SINGLE_HOST (auto mode) ==="
+  exec docker compose run --rm slop-hack bash -c "slop-engage '$TARGET' $SINGLE_HOST"
+fi
+
+# Interactive: open a shell with a heredoc pre-print showing how to start
+exec docker compose run --rm slop-hack bash -c "
+cat <<'BANNER'
+
+  slop-hack interactive shell
+  target:     $TARGET
+  engagement: $ENG_ID
+  model:      $ANTHROPIC_MODEL
+
+  Common starts:
+    slop-engage $TARGET $SINGLE_HOST     # full chain + agent specialists
+    claude                                # interactive agent, then describe in NL:
+                                          #   \"do passive recon on $TARGET\"
+                                          #   \"find live services and find vulns\"
+    findings list                         # current state
+    findings export-md > /work/$ENG_ID/report.md
+
+BANNER
+exec bash
+"

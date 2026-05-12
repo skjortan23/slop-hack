@@ -26,14 +26,21 @@ import sys
 from pathlib import Path
 
 CVES_DIRS = [
+    Path("/root/.local/nuclei-templates/http/cves"),
+    Path("/root/.local/nuclei-templates/http/vulnerabilities"),
+    # Legacy paths (pre-nuclei-v3) — kept for backward compat / other images
     Path("/root/nuclei-templates/http/cves"),
     Path("/root/nuclei-templates/http/vulnerabilities"),
 ]
 
 
-def find_templates(product: str, limit: int = 30) -> list[str]:
-    """grep -ril for the product across nuclei CVE templates dirs."""
+def find_templates(product: str, version: str = "", limit: int = 200) -> list[str]:
+    """Find nuclei templates matching the product. Prefer templates that also
+    mention the version (so e.g. apache 2.4.49 → CVE-2021-41773 is at the top
+    of the list, not at position 70 where the 30-template default would miss
+    it)."""
     found = []
+    version_priority = []
     for d in CVES_DIRS:
         if not d.exists():
             continue
@@ -43,13 +50,26 @@ def find_templates(product: str, limit: int = 30) -> list[str]:
                 capture_output=True, text=True, timeout=30,
             )
             for line in out.stdout.splitlines():
-                if line and line not in found:
+                if not line:
+                    continue
+                if version and version in line:
+                    if line not in version_priority:
+                        version_priority.append(line)
+                elif version:
+                    # quick check: file content contains the version?
+                    try:
+                        if version in Path(line).read_text(errors="ignore"):
+                            if line not in version_priority:
+                                version_priority.append(line)
+                            continue
+                    except Exception:
+                        pass
+                if line not in found and line not in version_priority:
                     found.append(line)
-                if len(found) >= limit:
-                    return found
         except Exception:
             continue
-    return found
+    # version-matched templates first, rest after; cap total at limit
+    return (version_priority + found)[:limit]
 
 
 def run_nuclei(host: str, port: int, templates: list[str]) -> list[dict]:
@@ -59,9 +79,13 @@ def run_nuclei(host: str, port: int, templates: list[str]) -> list[dict]:
     target = f"https://{host}:{port}" if port in (443, 8443) else f"http://{host}:{port}"
     out_file = Path(f"/tmp/vc-nuclei-{os.getpid()}.json")
     try:
+        # nuclei -t accepts comma-separated paths (not space-separated). The
+        # old `["-t"] + templates` form caused all but the first template to
+        # be treated as targets, silently dropping everything we wanted to run.
         cmd = (
-            ["nuclei", "-target", target, "-t"] + templates +
-            ["-json-export", str(out_file),
+            ["nuclei", "-target", target,
+             "-t", ",".join(templates),
+             "-json-export", str(out_file),
              "-silent", "-timeout", "8", "-rate-limit", "30"]
         )
         subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -77,6 +101,71 @@ def run_nuclei(host: str, port: int, templates: list[str]) -> list[dict]:
         except Exception:
             pass
     return []
+
+
+# Tier 2 patterns — matcher proves command execution / file-content disclosure.
+# If a nuclei template matches on these, the hit is real exploit confirmation.
+_TIER2_PATTERNS = [
+    r"\broot:.*:0:0:",          # /etc/passwd
+    r"\buid=\d+\([a-z]",          # `id` output
+    r"\[boot loader\]",            # win.ini
+    r"\[fonts\]",                  # win.ini
+    r"PRIVATE KEY",                # ssh keys / pem
+    r"AWS_SECRET_ACCESS_KEY",      # AWS creds
+    r"BEGIN RSA PRIVATE KEY",
+    r"<\?xml.*entity",             # XXE
+    r"\\windows\\system32",        # win path disclosure
+]
+
+
+_EXPLOIT_TAGS = {"rce", "lfi", "sqli", "ssti", "xxe", "cmd-injection",
+                 "file-disclosure", "traversal", "deserialization",
+                 "code-injection", "command-injection", "auth-bypass"}
+_OOB_TAGS = {"ssrf", "blind", "oob", "log4j", "log4shell"}
+_VERSION_TAGS = {"tech", "detect", "panel", "fingerprint", "exposed", "disclosure"}
+
+
+def classify_nuclei_hit(hit: dict) -> tuple[str, str]:
+    """Decide tier from template tags + response content.
+
+    Tier 2 (in-band proof of exec / file content) → critical
+    Tier 1 (OOB callback via interactsh)          → high
+    Tier 0 (version banner / fingerprint only)    → medium
+
+    Returns (tier_label, severity).
+    """
+    import re as _re
+
+    info = hit.get("info") or {}
+    tags = set((info.get("tags") or []))
+    response = hit.get("response") or ""
+    if isinstance(response, list):
+        response = "\n".join(str(x) for x in response)
+
+    # 1. Strong in-band signature in response → unambiguous Tier 2
+    if any(_re.search(p, response, _re.I) for p in _TIER2_PATTERNS):
+        return ("tier2", "critical")
+
+    # 2. Template tags identify exploit class
+    if tags & _EXPLOIT_TAGS:
+        # Exploit-class template that fired its matcher = in-band exploit proven
+        return ("tier2", "critical")
+
+    if tags & _OOB_TAGS:
+        return ("tier1", "high")
+
+    # 3. Check template file for interactsh use
+    tmpl_path = hit.get("template-path") or hit.get("template") or ""
+    if tmpl_path and Path(tmpl_path).exists():
+        try:
+            tmpl_src = Path(tmpl_path).read_text(errors="ignore")
+            if "{{interactsh" in tmpl_src or "interactsh-url" in tmpl_src:
+                return ("tier1", "high")
+        except Exception:
+            pass
+
+    # 4. Version/fingerprint-only template
+    return ("tier0", "medium")
 
 
 def run_searchsploit(product: str, version: str = "") -> list[dict]:
@@ -117,7 +206,7 @@ def main() -> int:
     ap.add_argument("version", nargs="?", default="")
     args = ap.parse_args()
 
-    templates = find_templates(args.product)
+    templates = find_templates(args.product, args.version)
     nuclei_hits = run_nuclei(args.host, args.port, templates)
     for hit in nuclei_hits:
         info = hit.get("info") or {}
@@ -125,12 +214,31 @@ def main() -> int:
         cves = cls.get("cve-id") or []
         cve = cves[0] if cves else None
 
+        # Classify by matcher type — overrides template's declared severity.
+        # See CLAUDE.md "tier-graded severity": critical=Tier 2 (in-band exec),
+        # high=Tier 1 (OOB callback), medium=Tier 0 (version banner only).
+        tier, graded_severity = classify_nuclei_hit(hit)
+        title = info.get("name") or hit.get("template-id", "nuclei finding")
+        title = f"[{tier}] {title}"
+
+        evidence_parts = [
+            f"matched at {hit.get('matched-at', '?')}",
+            f"template {hit.get('template-id', '?')}",
+        ]
+        # Include a snippet of the matched response if we have it (proof line)
+        for key in ("matched-line", "extracted-results"):
+            v = hit.get(key)
+            if v:
+                snippet = (v[0] if isinstance(v, list) else str(v))[:200]
+                evidence_parts.append(f"proof: {snippet}")
+                break
+
         log_finding(
             args.host, args.port,
-            severity=info.get("severity", "info"),
-            title=info.get("name") or hit.get("template-id", "nuclei finding"),
-            evidence=f"matched at {hit.get('matched-at', '?')} via template {hit.get('template-id', '?')}",
-            source="nuclei-cves",
+            severity=graded_severity,
+            title=title,
+            evidence=" | ".join(evidence_parts),
+            source=f"nuclei-cve-{tier}",
             cve=cve,
         )
 

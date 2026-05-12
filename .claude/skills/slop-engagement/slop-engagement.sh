@@ -131,46 +131,11 @@ else
 
   echo "  → $(wc -l < "$HOSTS_FILE") unique subdomains from CT/passive"
 
-  # Subdomain brute (unconditional) — CT logs miss subdomains covered by a
-  # wildcard cert (caught app.codelight.ai which crt.sh missed). Also misses
-  # subdomains where no cert was ever issued (internal-only services that
-  # got a public DNS A record). This is cheap (60 DNS queries) so run always.
-  echo "  · brute-forcing common subdomain prefixes"
-  BRUTE_CANDS="$ENGAGEMENT_DIR/recon/passive/brute-cands.txt"
-  > "$BRUTE_CANDS"
-  for prefix in \
-      app api admin dev staging prod beta qa test preview \
-      www mail smtp imap pop mx \
-      portal dashboard console manage \
-      new old v1 v2 \
-      ci build deploy jenkins gitlab git registry pipeline \
-      cdn static assets media files images \
-      monitor status metrics health \
-      shop store billing account profile login signup \
-      auth oauth sso \
-      internal private vpn \
-      cpanel webmin plesk control \
-      graphql api2 api-v1 api-v2 \
-      docs help support kb \
-      demo sandbox training; do
-    echo "${prefix}.${ROOT}" >> "$BRUTE_CANDS"
-  done
-  timeout 60 dnsx -nc -l "$BRUTE_CANDS" -resp -a -silent \
-    -r /opt/resolvers/resolvers.txt 2>/dev/null \
-    | awk '/\[A\]/ {print $1}' | sort -u \
-    > "$ENGAGEMENT_DIR/recon/passive/brute-resolved.txt"
-
-  NEW_HOSTS=$(comm -23 \
-      "$ENGAGEMENT_DIR/recon/passive/brute-resolved.txt" \
-      "$HOSTS_FILE" 2>/dev/null)
-  if [ -n "$NEW_HOSTS" ]; then
-    echo "$NEW_HOSTS" >> "$HOSTS_FILE"
-    sort -u "$HOSTS_FILE" -o "$HOSTS_FILE"
-    echo "  → +$(echo "$NEW_HOSTS" | wc -l | tr -d ' ') subdomains via brute:"
-    echo "$NEW_HOSTS" | head -10 | sed 's/^/      /'
-  else
-    echo "  → no new subdomains from brute"
-  fi
+  # Brute-force prefix enumeration removed — subfinder + amass + crt.sh
+  # already cover anything that's been issued a cert or seen by passive DNS.
+  # Brute against a wildcard-DNS domain (Cloudflare, registrar parking)
+  # produces all false-positives (every prefix "resolves"). If passive
+  # missed a host, the agent can probe it manually.
 
   echo "  → $(wc -l < "$HOSTS_FILE") unique subdomains total"
 fi
@@ -252,11 +217,16 @@ HTTPX_OUT="$ENGAGEMENT_DIR/recon/active/httpx-direct.json"
 
 # Rate-limit aggressively to keep Cloudflare/CDN happy. The chain is
 # bounded by total wall-clock, not single-host speed.
-timeout 300 sh -c "httpx -l '$ENGAGEMENT_DIR/recon/active/httpx-urls.txt' \
+# -timeout 5, outer 60 — fail fast when 80/443 don't respond (very common
+# on hosts that serve only on nonstandard ports). The full port discovery
+# happens in phase 3b (quickscan).
+# Drop -silent — its stdout buffering hangs when piped to a file with no
+# TTY, same bug pattern quickscan hit.
+timeout 60 httpx -l "$ENGAGEMENT_DIR/recon/active/httpx-urls.txt" \
   -title -tech-detect -server -status-code -follow-redirects \
-  -no-color -silent -json -timeout 20 \
+  -no-color -json -timeout 5 \
   -rate-limit 10 -threads 5 \
-  > '$HTTPX_OUT'" 2>/dev/null || true
+  > "$HTTPX_OUT" 2>/dev/null || true
 
 # Log each HTTP-responsive host as a service in findings
 WEB_HOSTS=$(jq -r '.host' "$HTTPX_OUT" 2>/dev/null | sort -u)
