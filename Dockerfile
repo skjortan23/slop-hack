@@ -129,6 +129,12 @@ RUN printf '#!/bin/sh\nexec python3 /root/.claude/skills/findings/findings.py "$
  && chmod +x /usr/local/bin/slop-engagement \
  && cp /root/.claude/skills/slop-engage/slop-engage.sh /usr/local/bin/slop-engage \
  && chmod +x /usr/local/bin/slop-engage \
+ && cp /root/.claude/skills/slop-status/slop-status.sh /usr/local/bin/slop-status \
+ && chmod +x /usr/local/bin/slop-status \
+ && printf '#!/bin/sh\nexec python3 /root/.claude/skills/slop-listen/slop-listen.py "$@"\n' \
+        > /usr/local/bin/slop-listen && chmod +x /usr/local/bin/slop-listen \
+ && cp /root/.claude/skills/shell-payloads/shell-payloads.sh /usr/local/bin/shell-payloads \
+ && chmod +x /usr/local/bin/shell-payloads \
  && chmod +x /root/.claude/skills/service-enum/playbooks/*.sh
 
 # --- mitm-start / mitm-stop: pidfile-based wrappers -----------------------

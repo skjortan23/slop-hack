@@ -74,10 +74,13 @@ fi
 # ── phase 1: agent picks up ──
 echo "=== phase 1 — agent picks up from chain output (mode=$MODE) ==="
 
-# Build a state summary used by all agent prompts
-FCOUNT=$(wc -l < "$ENGAGEMENT_DIR/findings/findings.jsonl" 2>/dev/null || echo 0)
+# Build a state summary used by all agent prompts. touch the files first
+# so wc doesn't print "No such file" to stderr on a clean / no-findings run.
+mkdir -p "$ENGAGEMENT_DIR/findings/hosts" "$ENGAGEMENT_DIR/webapp"
+touch "$ENGAGEMENT_DIR/findings/findings.jsonl" "$ENGAGEMENT_DIR/webapp/endpoints.jsonl"
+FCOUNT=$(wc -l < "$ENGAGEMENT_DIR/findings/findings.jsonl" | tr -d ' ')
 HCOUNT=$(ls "$ENGAGEMENT_DIR/findings/hosts/" 2>/dev/null | wc -l | tr -d ' ')
-ECOUNT=$(wc -l < "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" 2>/dev/null || echo 0)
+ECOUNT=$(wc -l < "$ENGAGEMENT_DIR/webapp/endpoints.jsonl" | tr -d ' ')
 
 STATE_HEADER="CONTRACT — read this first, every turn:
 You have $MAX_TURNS turns. After EACH probe, log the result with 'findings add'
@@ -412,8 +415,39 @@ STEP 4 — Wait for all Task returns, then write the narrative:
 JSON summary on stdout: {candidates_scanned, tasks_dispatched, exploited, deadend}"
 
   echo
-  echo "=== 5 specialists running in parallel — waiting for all ==="
+  echo "=== 5 specialists running in parallel — live status every 20s ==="
+  echo "  marker key:  ·=working  ✓=finished  t=assistant-turns  N=findings.jsonl lines"
+  echo
+
+  # Background watcher: print a status row every 20s until all 5 specialists
+  # have emitted a `result` event in their jsonl.
+  ( while true; do
+      sleep 20
+      [ -d "$SPECIALISTS_DIR" ] || continue
+      line="$(date +%H:%M:%S)"
+      done_count=0
+      for spec in auth-bypass injection takeover-tls disclosure cve-correlation; do
+        f="$SPECIALISTS_DIR/$spec.jsonl"
+        if [ -f "$f" ]; then
+          turns=$(grep -c '"type":"assistant"' "$f" 2>/dev/null)
+          if jq -e 'select(.type=="result")' "$f" >/dev/null 2>&1; then
+            mark="✓"; done_count=$((done_count + 1))
+          else
+            mark="·"
+          fi
+          line="$line  ${mark}${spec}=${turns}"
+        else
+          line="$line  -${spec}"
+        fi
+      done
+      n=$(wc -l < "$ENGAGEMENT_DIR/findings/findings.jsonl" 2>/dev/null | tr -d ' ')
+      echo "$line  N=$n"
+      [ "$done_count" -eq 5 ] && break
+    done ) &
+  WATCH_PID=$!
+
   wait
+  kill "$WATCH_PID" 2>/dev/null || true
   echo
   echo "=== specialists done ==="
 fi
